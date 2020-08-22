@@ -29,12 +29,17 @@ static const char *_STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %
 static httpd_handle_t stream_httpd = NULL;
 static httpd_handle_t camera_httpd = NULL;
 
+//static int64_t last_frame = 0;
+
 static esp_err_t system_info_handler(httpd_req_t *req);
 static esp_err_t cam_status_handler(httpd_req_t *req);
 static esp_err_t cam_stream_handler(httpd_req_t *req);
+static esp_err_t cam_capture_handler(httpd_req_t *req);
 
-
-//static int64_t last_frame = 0;
+typedef struct {
+    httpd_req_t *req;
+    size_t len;
+} jpg_chunking_t;
 
 esp_err_t init_server(void) {
 	httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -43,7 +48,7 @@ esp_err_t init_server(void) {
 	config.uri_match_fn = httpd_uri_match_wildcard;
 
 	ESP_LOGI(APP_HTTPD_TAG, "Starting HTTP Server");
-	APP_ERROR_CHECK(httpd_start(&camera_httpd, &config) == ESP_OK, "Start web server failed", err_start);
+	APP_ERROR_CHECK(httpd_start(&camera_httpd, &config) == ESP_OK, "Start web server failed", err_init);
 
 	/* URI handler for fetching system info */
 	httpd_uri_t system_info_uri = {
@@ -60,12 +65,20 @@ esp_err_t init_server(void) {
 		.user_ctx = NULL
 	};
 
+	httpd_uri_t cam_capture_uri = {
+		.uri = "/api/v1/cam/capture",
+		.method = HTTP_GET,
+		.handler = cam_capture_handler,
+		.user_ctx = NULL
+	};
+
 	httpd_register_uri_handler(camera_httpd, &system_info_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_status_uri);
+	httpd_register_uri_handler(camera_httpd, &cam_capture_uri);
 
 	config.server_port += 1;
 	config.ctrl_port += 1;
-	APP_ERROR_CHECK(httpd_start(&stream_httpd, &config) == ESP_OK, "Start stream server failed", err_start);
+	APP_ERROR_CHECK(httpd_start(&stream_httpd, &config) == ESP_OK, "Start stream server failed", err_init);
 
 	httpd_uri_t cam_stream_uri = {
 		.uri = "/api/v1/cam/stream",
@@ -77,8 +90,18 @@ esp_err_t init_server(void) {
 	httpd_register_uri_handler(stream_httpd, &cam_stream_uri);
 
 	return ESP_OK;
-err_start:
+err_init:
 	return ESP_FAIL;
+}
+
+static void clear_json(cJSON *root, const char *sys_info) {
+	free((void *)sys_info);
+	cJSON_Delete(root);
+}
+
+static void send_json_error(httpd_req_t *req, cJSON *root, const char *sys_info) {
+	clear_json(root, sys_info);
+	httpd_resp_send_500(req);
 }
 
 static void get_chip_info(esp_chip_info_t *chip_info, cJSON *root) {
@@ -125,12 +148,13 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
 	get_flash_info(&chip_info, root);
 
 	const char *sys_info = cJSON_Print(root);
-	esp_err_t res = httpd_resp_sendstr(req, sys_info);
-	free((void *)sys_info);
+	APP_ERROR_CHECK(httpd_resp_sendstr(req, sys_info) == ESP_OK, "Something wrong", err_info);
 
-	cJSON_Delete(root);
-
-	return res;
+	clear_json(root, sys_info);
+	return ESP_OK;
+err_info:
+	send_json_error(req, root, sys_info);
+	return ESP_FAIL;
 }
 
 static esp_err_t cam_status_handler(httpd_req_t *req) {
@@ -170,14 +194,14 @@ static esp_err_t cam_status_handler(httpd_req_t *req) {
 	cJSON_AddNumberToObject(root, "colorbar", s->status.colorbar);
 	cJSON_AddNumberToObject(root, "led_intensity", -1);
 
-
 	const char *sys_info = cJSON_Print(root);
-	esp_err_t res = httpd_resp_sendstr(req, sys_info);
-	free((void *)sys_info);
+	APP_ERROR_CHECK(httpd_resp_sendstr(req, sys_info) == ESP_OK, "Something wrong", err_status);
 
-	cJSON_Delete(root);
-
-	return res;
+	clear_json(root, sys_info);
+	return ESP_OK;
+err_status:
+	send_json_error(req, root, sys_info);
+	return ESP_FAIL;
 }
 
 static esp_err_t cam_stream_handler(httpd_req_t *req) {
@@ -242,6 +266,60 @@ static esp_err_t cam_stream_handler(httpd_req_t *req) {
 err_stream:
 	if (!!fb) free(fb);
 	if (!!_jpg_buf) free(_jpg_buf);
+
+	httpd_resp_send_500(req);
+
+	return ESP_FAIL;
+}
+
+static size_t jpg_encode_stream(void *arg, size_t index, const void *data, size_t len) {
+    jpg_chunking_t *j = (jpg_chunking_t *)arg;
+    if (!index)
+        j->len = 0;
+
+    if (httpd_resp_send_chunk(j->req, (const char *)data, len) != ESP_OK)
+        return 0;
+
+    j->len += len;
+    return len;
+}
+
+static esp_err_t cam_capture_handler(httpd_req_t *req) {
+	camera_fb_t *fb = NULL;
+	int64_t fr_start = esp_timer_get_time();
+
+	fb = esp_camera_fb_get();
+
+	APP_ERROR_CHECK(!!fb, "Camera capture failed", err_capture);
+
+	httpd_resp_set_type(req, "image/jpeg");
+	httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
+	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+	char ts[32];
+	snprintf(ts, 32, "%ld.%06ld", fb->timestamp.tv_sec, fb->timestamp.tv_usec);
+	httpd_resp_set_hdr(req, "X-Timestamp", (const char *)ts);
+
+	size_t fb_len = 0;
+	if (fb->format == PIXFORMAT_JPEG) {
+		fb_len = fb->len;
+		APP_ERROR_CHECK(httpd_resp_send(req, (const char *)fb->buf, fb->len) == ESP_OK, "Something wrong", err_capture);
+	} else {
+		jpg_chunking_t jchunk = {req, 0};
+		APP_ERROR_CHECK(frame2jpg_cb(fb, 80, jpg_encode_stream, &jchunk), "Error when converting camera frame buffer to JPEG", err_capture);
+		httpd_resp_send_chunk(req, NULL, 0);
+		fb_len = jchunk.len;
+	}
+	esp_camera_fb_return(fb);
+
+	int64_t fr_end = esp_timer_get_time();
+	ESP_LOGI(APP_HTTPD_TAG, "JPG: %uB %ums", (uint32_t)(fb_len), (uint32_t)((fr_end - fr_start) / 1000));
+
+	return ESP_OK;
+err_capture:
+	if (!!fb) free(fb);
+
+	httpd_resp_send_500(req);
 
 	return ESP_FAIL;
 }
