@@ -7,24 +7,25 @@
 #include "driver/gpio.h"
 
 #include "app_connect.h"
+#include "cam_server.h"
 
-esp_err_t event_handler(void *ctx, system_event_t *event) {
-    return ESP_OK;
-}
+#define SISBARC_WEBCAM_TAG "sisbarc-webcam"
 
 void app_main(void) {
-	nvs_flash_init();
-	tcpip_adapter_init();
-	ESP_ERROR_CHECK( esp_event_loop_init(event_handler, NULL) );
+	ESP_ERROR_CHECK(nvs_flash_init());
+	ESP_ERROR_CHECK(esp_netif_init());
+	ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    ESP_ERROR_CHECK( app_connect() );
+    ESP_ERROR_CHECK(app_connect());
+
+    ESP_ERROR_CHECK(start_cam_server());
 
     gpio_set_direction(GPIO_NUM_2, GPIO_MODE_OUTPUT);
     int level = 0;
     while (true) {
         gpio_set_level(GPIO_NUM_2, level);
         level = !level;
-        vTaskDelay(100 / portTICK_PERIOD_MS);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
 
