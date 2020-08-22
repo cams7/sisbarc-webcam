@@ -26,17 +26,24 @@ static const char *_STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" 
 static const char *_STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
 static const char *_STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\nX-Timestamp: %d.%06d\r\n\r\n";
 
+static httpd_handle_t stream_httpd = NULL;
+static httpd_handle_t camera_httpd = NULL;
+
 static esp_err_t system_info_handler(httpd_req_t *req);
 static esp_err_t cam_status_handler(httpd_req_t *req);
 static esp_err_t cam_stream_handler(httpd_req_t *req);
 
+
+//static int64_t last_frame = 0;
+
 esp_err_t init_server(void) {
-	httpd_handle_t server = NULL;
 	httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+	config.max_uri_handlers = 12;
+
 	config.uri_match_fn = httpd_uri_match_wildcard;
 
 	ESP_LOGI(APP_HTTPD_TAG, "Starting HTTP Server");
-	APP_ERROR_CHECK(httpd_start(&server, &config) == ESP_OK, "Start server failed", err_start);
+	APP_ERROR_CHECK(httpd_start(&camera_httpd, &config) == ESP_OK, "Start web server failed", err_start);
 
 	/* URI handler for fetching system info */
 	httpd_uri_t system_info_uri = {
@@ -45,7 +52,6 @@ esp_err_t init_server(void) {
 		.handler = system_info_handler,
 		.user_ctx = NULL
 	};
-	httpd_register_uri_handler(server, &system_info_uri);
 
 	httpd_uri_t cam_status_uri = {
 		.uri = "/api/v1/cam/status",
@@ -53,7 +59,13 @@ esp_err_t init_server(void) {
 		.handler = cam_status_handler,
 		.user_ctx = NULL
 	};
-	httpd_register_uri_handler(server, &cam_status_uri);
+
+	httpd_register_uri_handler(camera_httpd, &system_info_uri);
+	httpd_register_uri_handler(camera_httpd, &cam_status_uri);
+
+	config.server_port += 1;
+	config.ctrl_port += 1;
+	APP_ERROR_CHECK(httpd_start(&stream_httpd, &config) == ESP_OK, "Start stream server failed", err_start);
 
 	httpd_uri_t cam_stream_uri = {
 		.uri = "/api/v1/cam/stream",
@@ -61,7 +73,8 @@ esp_err_t init_server(void) {
 		.handler = cam_stream_handler,
 		.user_ctx = NULL
 	};
-	httpd_register_uri_handler(server, &cam_stream_uri);
+
+	httpd_register_uri_handler(stream_httpd, &cam_stream_uri);
 
 	return ESP_OK;
 err_start:
@@ -170,71 +183,49 @@ static esp_err_t cam_status_handler(httpd_req_t *req) {
 static esp_err_t cam_stream_handler(httpd_req_t *req) {
 	camera_fb_t *fb = NULL;
 	struct timeval _timestamp;
-	esp_err_t res = ESP_OK;
+
 	size_t _jpg_buf_len = 0;
 	uint8_t *_jpg_buf = NULL;
 	char *part_buf[128];
 
-	static int64_t last_frame = 0;
-	if (!last_frame) {
-		last_frame = esp_timer_get_time();
-	}
+//	if (!last_frame)
+//		last_frame = esp_timer_get_time();
 
-	res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
-	if (res != ESP_OK) {
-		return res;
-	}
+	APP_ERROR_CHECK(httpd_resp_set_type(req, _STREAM_CONTENT_TYPE) == ESP_OK, "Stream content type invalid", err_stream);
 
 	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 	httpd_resp_set_hdr(req, "X-Framerate", "60");
 
 	while (true) {
 		fb = esp_camera_fb_get();
-		if (!fb) {
-			ESP_LOGE(APP_HTTPD_TAG, "Camera capture failed");
-			res = ESP_FAIL;
-		} else {
-			_timestamp.tv_sec = fb->timestamp.tv_sec;
-			_timestamp.tv_usec = fb->timestamp.tv_usec;
-			if (fb->format != PIXFORMAT_JPEG) {
-				bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
-				esp_camera_fb_return(fb);
-				fb = NULL;
-				if (!jpeg_converted) {
-					ESP_LOGE(APP_HTTPD_TAG, "JPEG compression failed");
-					res = ESP_FAIL;
-				}
-			} else {
-				_jpg_buf_len = fb->len;
-				_jpg_buf = fb->buf;
-			}
-		}
-		if (res == ESP_OK) {
-			res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
-		}
-		if (res == ESP_OK) {
-			size_t hlen = snprintf((char *)part_buf, 128, _STREAM_PART, _jpg_buf_len, _timestamp.tv_sec, _timestamp.tv_usec);
-			res = httpd_resp_send_chunk(req, (const char *)part_buf, hlen);
-		}
-		if (res == ESP_OK) {
-			res = httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len);
-		}
-		if (fb) {
-			esp_camera_fb_return(fb);
-			fb = NULL;
-			_jpg_buf = NULL;
-		} else if (_jpg_buf) {
-			free(_jpg_buf);
-			_jpg_buf = NULL;
-		}
-		if (res != ESP_OK) {
-			break;
-		}
-		int64_t fr_end = esp_timer_get_time();
+		APP_ERROR_CHECK(!!fb, "Camera capture failed", err_stream);
 
-		int64_t frame_time = fr_end - last_frame;
-		last_frame = fr_end;
-		frame_time /= 1000;
+		_timestamp.tv_sec = fb->timestamp.tv_sec;
+		_timestamp.tv_usec = fb->timestamp.tv_usec;
+		if (fb->format != PIXFORMAT_JPEG) {
+			bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
+			APP_ERROR_CHECK(jpeg_converted, "JPEG compression failed", err_stream);
+		} else {
+			_jpg_buf_len = fb->len;
+			_jpg_buf = fb->buf;
+		}
+
+		APP_ERROR_CHECK(httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY)) == ESP_OK, "Error sending chunk", err_stream);
+
+		size_t hlen = snprintf((char *)part_buf, 128, _STREAM_PART, _jpg_buf_len, _timestamp.tv_sec, _timestamp.tv_usec);
+		APP_ERROR_CHECK(httpd_resp_send_chunk(req, (const char *)part_buf, hlen) == ESP_OK, "Error sending chunk (part buffer)", err_stream);
+
+		APP_ERROR_CHECK(httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len) == ESP_OK, "Error sending chunk (jpg buffer)", err_stream);
+
+		_jpg_buf = NULL;
+		esp_camera_fb_return(fb);
+		fb = NULL;
+
+//		int64_t fr_end = esp_timer_get_time();
+
+//		int64_t frame_time = fr_end - last_frame;
+//		last_frame = fr_end;
+//		frame_time /= 1000;
 //        uint32_t avg_frame_time = ra_filter_run(&ra_filter, frame_time);
 //        ESP_LOGI(
 //        	TAG,
@@ -245,6 +236,12 @@ static esp_err_t cam_stream_handler(httpd_req_t *req) {
 //        );
 	}
 
-	last_frame = 0;
-	return res;
+//	last_frame = 0;
+
+	return ESP_OK;
+err_stream:
+	if (!!fb) free(fb);
+	if (!!_jpg_buf) free(_jpg_buf);
+
+	return ESP_FAIL;
 }
