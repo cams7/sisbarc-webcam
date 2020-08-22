@@ -1,5 +1,5 @@
 /*
- * cam_server.h
+ * app_httpd.h
  *
  *  Created on: 22 de ago de 2020
  *      Author: ceanm
@@ -13,9 +13,9 @@ extern "C" {
 
 #include "esp_err.h"
 
-#define CAM_SERVER_TAG "cam_server"
+#define APP_HTTPD_TAG "app_httpd"
 
-esp_err_t start_cam_server(void);
+esp_err_t init_server(void);
 
 #ifdef __cplusplus
 }
