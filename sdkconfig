@@ -121,9 +121,17 @@ CONFIG_PARTITION_TABLE_MD5=y
 #
 # Example Configuration
 #
-CONFIG_ESP_WIFI_SSID="Magalhaes"
-CONFIG_ESP_WIFI_PASSWORD="C@tarin@"
+CONFIG_ESP_WIFI_SSID="myssid"
+CONFIG_ESP_WIFI_PASSWORD="mypassword"
 # end of Example Configuration
+
+#
+# Application Connection Configuration
+#
+CONFIG_APP_WIFI_SSID="Magalhaes"
+CONFIG_APP_WIFI_PASSWORD="C@tarin@"
+# CONFIG_APP_CONNECT_IPV6 is not set
+# end of Application Connection Configuration
 
 #
 # Compiler options
