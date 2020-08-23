@@ -8,6 +8,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_spi_flash.h"
+#include "esp_vfs.h"
 #include "esp_http_server.h"
 #include "esp_camera.h"
 #include "cJSON.h"
@@ -20,6 +21,9 @@
 #ifdef CONFIG_IDF_TARGET_ESP32
 #define CHIP_NAME "ESP32"
 #endif
+
+#define FILE_PATH_MAX (ESP_VFS_PATH_MAX + 128)
+#define SCRATCH_BUFSIZE (10240)
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 static const char *_STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
@@ -35,15 +39,25 @@ static esp_err_t system_info_handler(httpd_req_t *req);
 static esp_err_t cam_status_handler(httpd_req_t *req);
 static esp_err_t cam_stream_handler(httpd_req_t *req);
 static esp_err_t cam_capture_handler(httpd_req_t *req);
+static esp_err_t cam_cmd_handler(httpd_req_t *req);
 
 typedef struct {
     httpd_req_t *req;
     size_t len;
 } jpg_chunking_t;
 
+typedef struct rest_server_context {
+    char base_path[ESP_VFS_PATH_MAX + 1];
+    char scratch[SCRATCH_BUFSIZE];
+} rest_server_context_t;
+
 esp_err_t init_server(void) {
+	rest_server_context_t *rest_context = NULL;
+	rest_context = calloc(1, sizeof(rest_server_context_t));
+	APP_ERROR_CHECK(!!rest_context, "No memory for rest context", err_init);
+
 	httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-	config.max_uri_handlers = 12;
+	config.max_uri_handlers = 10;
 
 	config.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -72,9 +86,17 @@ esp_err_t init_server(void) {
 		.user_ctx = NULL
 	};
 
+	httpd_uri_t cam_cmd_uri = {
+		.uri = "/api/v1/cam/control",
+		.method = HTTP_POST,
+		.handler = cam_cmd_handler,
+		.user_ctx = rest_context
+	};
+
 	httpd_register_uri_handler(camera_httpd, &system_info_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_status_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_capture_uri);
+	httpd_register_uri_handler(camera_httpd, &cam_cmd_uri);
 
 	config.server_port += 1;
 	config.ctrl_port += 1;
@@ -91,17 +113,19 @@ esp_err_t init_server(void) {
 
 	return ESP_OK;
 err_init:
+	if(!!rest_context) free(rest_context);
+
 	return ESP_FAIL;
 }
 
-static void clear_json(cJSON *root, const char *sys_info) {
-	free((void *)sys_info);
-	cJSON_Delete(root);
+static void clear_get_json(cJSON *root, char *sys_info) {
+	if(!!sys_info) free(sys_info);
+	if(!!root) cJSON_Delete(root);
 }
 
-static void send_json_error(httpd_req_t *req, cJSON *root, const char *sys_info) {
-	clear_json(root, sys_info);
-	httpd_resp_send_500(req);
+static esp_err_t send_json_error(httpd_req_t *req, cJSON *root, char *sys_info) {
+	clear_get_json(root, sys_info);
+	return httpd_resp_send_500(req);
 }
 
 static void get_chip_info(esp_chip_info_t *chip_info, cJSON *root) {
@@ -139,6 +163,7 @@ static void get_flash_info(esp_chip_info_t *chip_info, cJSON *root) {
 }
 
 static esp_err_t system_info_handler(httpd_req_t *req) {
+	esp_err_t res;
 	httpd_resp_set_type(req, "application/json");
 	cJSON *root = cJSON_CreateObject();
 	esp_chip_info_t chip_info;
@@ -147,17 +172,18 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
 	get_chip_info(&chip_info, root);
 	get_flash_info(&chip_info, root);
 
-	const char *sys_info = cJSON_Print(root);
-	APP_ERROR_CHECK(httpd_resp_sendstr(req, sys_info) == ESP_OK, "Something wrong", err_info);
+	char *sys_info = cJSON_Print(root);
+	APP_ERROR_CHECK((res = httpd_resp_sendstr(req, sys_info)) == ESP_OK, "Something wrong", err_info_with_resp);
 
-	clear_json(root, sys_info);
-	return ESP_OK;
-err_info:
-	send_json_error(req, root, sys_info);
-	return ESP_FAIL;
+	clear_get_json(root, sys_info);
+	return res;
+err_info_with_resp:
+	res = send_json_error(req, root, sys_info);
+	return res;
 }
 
 static esp_err_t cam_status_handler(httpd_req_t *req) {
+	esp_err_t res;
 	sensor_t *s = esp_camera_sensor_get();
 
 	httpd_resp_set_type(req, "application/json");
@@ -194,17 +220,18 @@ static esp_err_t cam_status_handler(httpd_req_t *req) {
 	cJSON_AddNumberToObject(root, "colorbar", s->status.colorbar);
 	cJSON_AddNumberToObject(root, "led_intensity", -1);
 
-	const char *sys_info = cJSON_Print(root);
-	APP_ERROR_CHECK(httpd_resp_sendstr(req, sys_info) == ESP_OK, "Something wrong", err_status);
+	char *sys_info = cJSON_Print(root);
+	APP_ERROR_CHECK((res = httpd_resp_sendstr(req, sys_info)) == ESP_OK, "Something wrong", err_status_with_resp);
 
-	clear_json(root, sys_info);
-	return ESP_OK;
-err_status:
-	send_json_error(req, root, sys_info);
-	return ESP_FAIL;
+	clear_get_json(root, sys_info);
+	return res;
+err_status_with_resp:
+	res = send_json_error(req, root, sys_info);
+	return res;
 }
 
 static esp_err_t cam_stream_handler(httpd_req_t *req) {
+	esp_err_t res;
 	camera_fb_t *fb = NULL;
 	struct timeval _timestamp;
 
@@ -215,31 +242,31 @@ static esp_err_t cam_stream_handler(httpd_req_t *req) {
 //	if (!last_frame)
 //		last_frame = esp_timer_get_time();
 
-	APP_ERROR_CHECK(httpd_resp_set_type(req, _STREAM_CONTENT_TYPE) == ESP_OK, "Stream content type invalid", err_stream);
+	APP_ERROR_CHECK(httpd_resp_set_type(req, _STREAM_CONTENT_TYPE) == ESP_OK, "Stream content type invalid", err_stream_with_resp);
 
 	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 	httpd_resp_set_hdr(req, "X-Framerate", "60");
 
 	while (true) {
 		fb = esp_camera_fb_get();
-		APP_ERROR_CHECK(!!fb, "Camera capture failed", err_stream);
+		APP_ERROR_CHECK(!!fb, "Camera capture failed", err_stream_with_resp);
 
 		_timestamp.tv_sec = fb->timestamp.tv_sec;
 		_timestamp.tv_usec = fb->timestamp.tv_usec;
 		if (fb->format != PIXFORMAT_JPEG) {
 			bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
-			APP_ERROR_CHECK(jpeg_converted, "JPEG compression failed", err_stream);
+			APP_ERROR_CHECK(jpeg_converted, "JPEG compression failed", err_stream_with_resp);
 		} else {
 			_jpg_buf_len = fb->len;
 			_jpg_buf = fb->buf;
 		}
 
-		APP_ERROR_CHECK(httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY)) == ESP_OK, "Error sending chunk", err_stream);
+		APP_ERROR_CHECK((res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY))) == ESP_OK, "Error sending chunk", err_stream);
 
 		size_t hlen = snprintf((char *)part_buf, 128, _STREAM_PART, _jpg_buf_len, _timestamp.tv_sec, _timestamp.tv_usec);
-		APP_ERROR_CHECK(httpd_resp_send_chunk(req, (const char *)part_buf, hlen) == ESP_OK, "Error sending chunk (part buffer)", err_stream);
+		APP_ERROR_CHECK((res = httpd_resp_send_chunk(req, (const char *)part_buf, hlen)) == ESP_OK, "Error sending chunk (part buffer)", err_stream);
 
-		APP_ERROR_CHECK(httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len) == ESP_OK, "Error sending chunk (jpg buffer)", err_stream);
+		APP_ERROR_CHECK((res = httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len)) == ESP_OK, "Error sending chunk (jpg buffer)", err_stream);
 
 		_jpg_buf = NULL;
 		esp_camera_fb_return(fb);
@@ -262,14 +289,13 @@ static esp_err_t cam_stream_handler(httpd_req_t *req) {
 
 //	last_frame = 0;
 
-	return ESP_OK;
+	res = ESP_OK;
+	return res;
+err_stream_with_resp:
+	res = httpd_resp_send_500(req);
 err_stream:
-	if (!!fb) free(fb);
 	if (!!_jpg_buf) free(_jpg_buf);
-
-	httpd_resp_send_500(req);
-
-	return ESP_FAIL;
+	return res;
 }
 
 static size_t jpg_encode_stream(void *arg, size_t index, const void *data, size_t len) {
@@ -285,12 +311,12 @@ static size_t jpg_encode_stream(void *arg, size_t index, const void *data, size_
 }
 
 static esp_err_t cam_capture_handler(httpd_req_t *req) {
-	camera_fb_t *fb = NULL;
+	esp_err_t res;
 	int64_t fr_start = esp_timer_get_time();
 
-	fb = esp_camera_fb_get();
+	camera_fb_t *fb = esp_camera_fb_get();
 
-	APP_ERROR_CHECK(!!fb, "Camera capture failed", err_capture);
+	APP_ERROR_CHECK(!!fb, "Camera capture failed", err_capture_with_resp);
 
 	httpd_resp_set_type(req, "image/jpeg");
 	httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
@@ -303,11 +329,11 @@ static esp_err_t cam_capture_handler(httpd_req_t *req) {
 	size_t fb_len = 0;
 	if (fb->format == PIXFORMAT_JPEG) {
 		fb_len = fb->len;
-		APP_ERROR_CHECK(httpd_resp_send(req, (const char *)fb->buf, fb->len) == ESP_OK, "Something wrong", err_capture);
+		APP_ERROR_CHECK((res = httpd_resp_send(req, (const char *)fb->buf, fb->len)) == ESP_OK, "Something wrong", err_capture);
 	} else {
 		jpg_chunking_t jchunk = {req, 0};
-		APP_ERROR_CHECK(frame2jpg_cb(fb, 80, jpg_encode_stream, &jchunk), "Error when converting camera frame buffer to JPEG", err_capture);
-		httpd_resp_send_chunk(req, NULL, 0);
+		APP_ERROR_CHECK(frame2jpg_cb(fb, 80, jpg_encode_stream, &jchunk), "Error when converting camera frame buffer to JPEG", err_capture_with_resp);
+		res = httpd_resp_send_chunk(req, NULL, 0);
 		fb_len = jchunk.len;
 	}
 	esp_camera_fb_return(fb);
@@ -315,11 +341,186 @@ static esp_err_t cam_capture_handler(httpd_req_t *req) {
 	int64_t fr_end = esp_timer_get_time();
 	ESP_LOGI(APP_HTTPD_TAG, "JPG: %uB %ums", (uint32_t)(fb_len), (uint32_t)((fr_end - fr_start) / 1000));
 
-	return ESP_OK;
+	return res;
+err_capture_with_resp:
+	res = httpd_resp_send_500(req);
 err_capture:
-	if (!!fb) free(fb);
+	return res;
+}
 
-	httpd_resp_send_500(req);
+static char* getBuffer(httpd_req_t *req, esp_err_t *res) {
+	char *buffer = NULL;
+	int total_len = req->content_len;
 
-	return ESP_FAIL;
+	if (total_len >= SCRATCH_BUFSIZE) {
+		/* Respond with 500 Internal Server Error */
+		*res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content too long");
+		APP_ERROR_CHECK(false, "Content too long", err_set_buffer);
+	}
+
+	int cur_len = 0;
+	buffer = ((rest_server_context_t *)(req->user_ctx))->scratch;
+
+	int received = 0;
+
+	while (cur_len < total_len) {
+		received = httpd_req_recv(req, buffer + cur_len, total_len);
+		if (received <= 0) {
+			/* Respond with 500 Internal Server Error */
+			*res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to post control value");
+			APP_ERROR_CHECK(false, "Failed to post control value", err_set_buffer);
+		}
+		cur_len += received;
+	}
+	buffer[total_len] = '\0';
+
+	return buffer;
+err_set_buffer:
+	return NULL;
+}
+
+static esp_err_t cam_cmd_handler(httpd_req_t *req) {
+	esp_err_t res;
+	char *buf;
+
+	APP_ERROR_CHECK(!!(buf = getBuffer(req, &res)), "An error occurred while loading the buffer", err_cmd);
+
+	cJSON *root = cJSON_Parse(buf);
+	sensor_t *sensor = esp_camera_sensor_get();
+
+	int framesize = JSON_GET_INT(root, "framesize");
+	if (framesize != -1)
+		if (sensor->pixformat == PIXFORMAT_JPEG)
+			APP_ERROR_CHECK(!sensor->set_framesize(sensor, (framesize_t)framesize), "Something wrong", err_cmd_with_resp);
+
+	int quality = JSON_GET_INT(root, "quality");
+	if (quality != -1)
+		APP_ERROR_CHECK(!sensor->set_quality(sensor, quality), "Something wrong", err_cmd_with_resp);
+
+	int contrast = JSON_GET_INT(root, "contrast");
+	if (contrast != -1)
+		APP_ERROR_CHECK(!sensor->set_contrast(sensor, contrast), "Something wrong", err_cmd_with_resp);
+
+	int brightness = JSON_GET_INT(root, "brightness");
+	if (brightness != -1)
+		APP_ERROR_CHECK(!sensor->set_brightness(sensor, brightness), "Something wrong", err_cmd_with_resp);
+
+	int saturation = JSON_GET_INT(root, "saturation");
+	if (saturation != -1)
+		APP_ERROR_CHECK(!sensor->set_saturation(sensor, saturation), "Something wrong", err_cmd_with_resp);
+
+	int gainceiling = JSON_GET_INT(root, "gainceiling");
+	if (gainceiling != -1)
+		APP_ERROR_CHECK(!sensor->set_gainceiling(sensor, (gainceiling_t)gainceiling), "Something wrong", err_cmd_with_resp);
+
+	int colorbar = JSON_GET_INT(root, "colorbar");
+	if (colorbar != -1)
+		APP_ERROR_CHECK(!sensor->set_colorbar(sensor, colorbar), "Something wrong", err_cmd_with_resp);
+
+	int awb = JSON_GET_INT(root, "awb");
+	if (awb != -1)
+		APP_ERROR_CHECK(!sensor->set_whitebal(sensor, awb), "Something wrong", err_cmd_with_resp);
+
+	int agc = JSON_GET_INT(root, "agc");
+	if (agc != -1)
+		APP_ERROR_CHECK(!sensor->set_gain_ctrl(sensor, agc), "Something wrong", err_cmd_with_resp);
+
+	int aec = JSON_GET_INT(root, "aec");
+	if (aec != -1)
+		APP_ERROR_CHECK(!sensor->set_exposure_ctrl(sensor, aec), "Something wrong", err_cmd_with_resp);
+
+	int hmirror = JSON_GET_INT(root, "hmirror");
+	if (hmirror != -1)
+		APP_ERROR_CHECK(!sensor->set_hmirror(sensor, hmirror), "Something wrong", err_cmd_with_resp);
+
+	int vflip = JSON_GET_INT(root, "vflip");
+	if (vflip != -1)
+		APP_ERROR_CHECK(!sensor->set_vflip(sensor, vflip), "Something wrong", err_cmd_with_resp);
+
+	int awb_gain = JSON_GET_INT(root, "awb_gain");
+	if (awb_gain != -1)
+		APP_ERROR_CHECK(!sensor->set_awb_gain(sensor, awb_gain), "Something wrong", err_cmd_with_resp);
+
+	int agc_gain = JSON_GET_INT(root, "agc_gain");
+	if (agc_gain != -1)
+		APP_ERROR_CHECK(!sensor->set_agc_gain(sensor, agc_gain), "Something wrong", err_cmd_with_resp);
+
+	int aec_value = JSON_GET_INT(root, "aec_value");
+	if (aec_value != -1)
+		APP_ERROR_CHECK(!sensor->set_aec_value(sensor, aec_value), "Something wrong", err_cmd_with_resp);
+
+	int aec2 = JSON_GET_INT(root, "aec2");
+	if (aec2 != -1)
+		APP_ERROR_CHECK(!sensor->set_aec2(sensor, aec2), "Something wrong", err_cmd_with_resp);
+
+	int dcw = JSON_GET_INT(root, "dcw");
+	if (dcw != -1)
+		APP_ERROR_CHECK(!sensor->set_dcw(sensor, dcw), "Something wrong", err_cmd_with_resp);
+
+	int bpc = JSON_GET_INT(root, "bpc");
+	if (bpc != -1)
+		APP_ERROR_CHECK(!sensor->set_bpc(sensor, bpc), "Something wrong", err_cmd_with_resp);
+
+	int wpc = JSON_GET_INT(root, "wpc");
+	if (wpc != -1)
+		APP_ERROR_CHECK(!sensor->set_wpc(sensor, wpc), "Something wrong", err_cmd_with_resp);
+
+	int raw_gma = JSON_GET_INT(root, "raw_gma");
+	if (raw_gma != -1)
+		APP_ERROR_CHECK(!sensor->set_raw_gma(sensor, raw_gma), "Something wrong", err_cmd_with_resp);
+
+	int lenc = JSON_GET_INT(root, "lenc");
+	if (lenc != -1)
+		APP_ERROR_CHECK(!sensor->set_lenc(sensor, lenc), "Something wrong", err_cmd_with_resp);
+
+	int special_effect = JSON_GET_INT(root, "special_effect");
+	if (special_effect != -1)
+		APP_ERROR_CHECK(!sensor->set_special_effect(sensor, special_effect), "Something wrong", err_cmd_with_resp);
+
+	int wb_mode = JSON_GET_INT(root, "wb_mode");
+	if (wb_mode != -1)
+		APP_ERROR_CHECK(!sensor->set_wb_mode(sensor, wb_mode), "Something wrong", err_cmd_with_resp);
+
+	int ae_level = JSON_GET_INT(root, "ae_level");
+	if (ae_level != -1)
+		APP_ERROR_CHECK(!sensor->set_ae_level(sensor, ae_level), "Something wrong", err_cmd_with_resp);
+
+	ESP_LOGI(APP_HTTPD_TAG,
+		"CAM control:\n\tframesize = %d\n\tquality = %d\n\tcontrast = %d\n\tbrightness = %d\n\tsaturation = %d\n\tgainceiling = %d\n\tcolorbar = %d\n\tawb = %d\n\tagc = %d\n\taec = %d\n\thmirror = %d\n\tvflip = %d\n\tawb_gain = %d\n\tagc_gain = %d\n\taec_value = %d\n\taec2 = %d\n\tdcw = %d\n\tbpc = %d\n\twpc = %d\n\traw_gma = %d\n\tlenc = %d\n\tspecial_effect = %d\n\twb_mode = %d\n\tae_level = %d",
+		framesize,
+		quality,
+		contrast,
+		brightness,
+		saturation,
+		gainceiling,
+		colorbar,
+		awb,
+		agc,
+		aec,
+		hmirror,
+		vflip,
+		awb_gain,
+		agc_gain,
+		aec_value,
+		aec2,
+		dcw,
+		bpc,
+		wpc,
+		raw_gma,
+		lenc,
+		special_effect,
+		wb_mode,
+		ae_level
+	);
+
+	cJSON_Delete(root);
+
+	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+	res = httpd_resp_send(req, NULL, 0);
+	return res;
+err_cmd_with_resp:
+	cJSON_Delete(root);
+	res = httpd_resp_send_500(req);
+err_cmd:
+	return res;
 }
