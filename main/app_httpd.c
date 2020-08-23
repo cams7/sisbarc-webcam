@@ -40,6 +40,9 @@ static esp_err_t cam_status_handler(httpd_req_t *req);
 static esp_err_t cam_stream_handler(httpd_req_t *req);
 static esp_err_t cam_capture_handler(httpd_req_t *req);
 static esp_err_t cam_cmd_handler(httpd_req_t *req);
+static esp_err_t cam_xclk_handler(httpd_req_t *req);
+static esp_err_t cam_reg_handler(httpd_req_t *req);
+static esp_err_t cam_greg_handler(httpd_req_t *req);
 
 typedef struct {
     httpd_req_t *req;
@@ -93,10 +96,34 @@ esp_err_t init_server(void) {
 		.user_ctx = rest_context
 	};
 
+	httpd_uri_t cam_xclk_uri = {
+		.uri = "/api/v1/cam/xclk",
+		.method = HTTP_POST,
+		.handler = cam_xclk_handler,
+		.user_ctx = rest_context
+	};
+
+	httpd_uri_t cam_reg_uri = {
+		.uri = "/api/v1/cam/reg",
+		.method = HTTP_POST,
+		.handler = cam_reg_handler,
+		.user_ctx = rest_context
+	};
+
+	httpd_uri_t cam_greg_uri = {
+		.uri = "/api/v1/cam/greg",
+		.method = HTTP_POST,
+		.handler = cam_greg_handler,
+		.user_ctx = rest_context
+	};
+
 	httpd_register_uri_handler(camera_httpd, &system_info_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_status_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_capture_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_cmd_uri);
+	httpd_register_uri_handler(camera_httpd, &cam_xclk_uri);
+	httpd_register_uri_handler(camera_httpd, &cam_reg_uri);
+	httpd_register_uri_handler(camera_httpd, &cam_greg_uri);
 
 	config.server_port += 1;
 	config.ctrl_port += 1;
@@ -355,7 +382,7 @@ static char* getBuffer(httpd_req_t *req, esp_err_t *res) {
 	if (total_len >= SCRATCH_BUFSIZE) {
 		/* Respond with 500 Internal Server Error */
 		*res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content too long");
-		APP_ERROR_CHECK(false, "Content too long", err_set_buffer);
+		APP_ERROR_CHECK(false, "", err_set_buffer);
 	}
 
 	int cur_len = 0;
@@ -368,7 +395,7 @@ static char* getBuffer(httpd_req_t *req, esp_err_t *res) {
 		if (received <= 0) {
 			/* Respond with 500 Internal Server Error */
 			*res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to post control value");
-			APP_ERROR_CHECK(false, "Failed to post control value", err_set_buffer);
+			APP_ERROR_CHECK(false, "", err_set_buffer);
 		}
 		cur_len += received;
 	}
@@ -381,11 +408,12 @@ err_set_buffer:
 
 static esp_err_t cam_cmd_handler(httpd_req_t *req) {
 	esp_err_t res;
+	cJSON *root = NULL;
 	char *buf;
 
 	APP_ERROR_CHECK(!!(buf = getBuffer(req, &res)), "An error occurred while loading the buffer", err_cmd);
 
-	cJSON *root = cJSON_Parse(buf);
+	root = cJSON_Parse(buf);
 	sensor_t *sensor = esp_camera_sensor_get();
 
 	int framesize = JSON_GET_INT(root, "framesize");
@@ -485,8 +513,13 @@ static esp_err_t cam_cmd_handler(httpd_req_t *req) {
 	if (ae_level != -1)
 		APP_ERROR_CHECK(!sensor->set_ae_level(sensor, ae_level), "Something wrong", err_cmd_with_resp);
 
+	cJSON_Delete(root);
+
+	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+	res = httpd_resp_send(req, NULL, 0);
+
 	ESP_LOGI(APP_HTTPD_TAG,
-		"CAM control:\n\tframesize = %d\n\tquality = %d\n\tcontrast = %d\n\tbrightness = %d\n\tsaturation = %d\n\tgainceiling = %d\n\tcolorbar = %d\n\tawb = %d\n\tagc = %d\n\taec = %d\n\thmirror = %d\n\tvflip = %d\n\tawb_gain = %d\n\tagc_gain = %d\n\taec_value = %d\n\taec2 = %d\n\tdcw = %d\n\tbpc = %d\n\twpc = %d\n\traw_gma = %d\n\tlenc = %d\n\tspecial_effect = %d\n\twb_mode = %d\n\tae_level = %d",
+		"Set Control:\n\tframesize = %d\n\tquality = %d\n\tcontrast = %d\n\tbrightness = %d\n\tsaturation = %d\n\tgainceiling = %d\n\tcolorbar = %d\n\tawb = %d\n\tagc = %d\n\taec = %d\n\thmirror = %d\n\tvflip = %d\n\tawb_gain = %d\n\tagc_gain = %d\n\taec_value = %d\n\taec2 = %d\n\tdcw = %d\n\tbpc = %d\n\twpc = %d\n\traw_gma = %d\n\tlenc = %d\n\tspecial_effect = %d\n\twb_mode = %d\n\tae_level = %d",
 		framesize,
 		quality,
 		contrast,
@@ -512,15 +545,113 @@ static esp_err_t cam_cmd_handler(httpd_req_t *req) {
 		wb_mode,
 		ae_level
 	);
+	return res;
+err_cmd_with_resp:
+	res = httpd_resp_send_500(req);
+err_cmd:
+	if(!!root) cJSON_Delete(root);
+	return res;
+}
+
+static esp_err_t cam_xclk_handler(httpd_req_t *req) {
+	esp_err_t res;
+	cJSON *root = NULL;
+	char *buf;
+
+	APP_ERROR_CHECK(!!(buf = getBuffer(req, &res)), "An error occurred while loading the buffer", err_xclk);
+
+	root = cJSON_Parse(buf);
+	sensor_t *sensor = esp_camera_sensor_get();
+
+	int xclk = JSON_GET_INT(root, "xclk");
+	if (xclk != -1)
+		APP_ERROR_CHECK(!sensor->set_xclk(sensor, LEDC_TIMER_0, xclk), "Something wrong", err_xclk_with_resp);
+	else {
+		res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid or incomplete content");
+		APP_ERROR_CHECK(false, "", err_xclk);
+	}
 
 	cJSON_Delete(root);
 
 	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 	res = httpd_resp_send(req, NULL, 0);
+
+	ESP_LOGI(APP_HTTPD_TAG, "Set XCLK: %d MHz", xclk);
 	return res;
-err_cmd_with_resp:
-	cJSON_Delete(root);
+err_xclk_with_resp:
 	res = httpd_resp_send_500(req);
-err_cmd:
+err_xclk:
+	if(!!root) cJSON_Delete(root);
+	return res;
+}
+
+static esp_err_t cam_reg_handler(httpd_req_t *req) {
+	esp_err_t res;
+	cJSON *root = NULL;
+	char *buf;
+
+	APP_ERROR_CHECK(!!(buf = getBuffer(req, &res)), "An error occurred while loading the buffer", err_reg);
+
+	root = cJSON_Parse(buf);
+	sensor_t *sensor = esp_camera_sensor_get();
+
+	int reg = JSON_GET_INT(root, "reg");
+	int mask = JSON_GET_INT(root, "mask");
+	int val = JSON_GET_INT(root, "val");
+	if (reg != -1 && mask != -1 && val != -1)
+		APP_ERROR_CHECK(!sensor->set_reg(sensor, reg, mask, val), "Something wrong", err_reg_with_resp);
+	else {
+		res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid or incomplete content");
+		APP_ERROR_CHECK(false, "", err_reg);
+	}
+
+	cJSON_Delete(root);
+
+	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+	res = httpd_resp_send(req, NULL, 0);
+
+	ESP_LOGI(APP_HTTPD_TAG, "Set Register: reg: 0x%02x, mask: 0x%02x, value: 0x%02x", reg, mask, val);
+	return res;
+err_reg_with_resp:
+	res = httpd_resp_send_500(req);
+err_reg:
+	if(!!root) cJSON_Delete(root);
+	return res;
+}
+
+static esp_err_t cam_greg_handler(httpd_req_t *req) {
+	esp_err_t res;
+	cJSON *root = NULL;
+	char *buf;
+
+	APP_ERROR_CHECK(!!(buf = getBuffer(req, &res)), "An error occurred while loading the buffer", err_greg);
+
+	root = cJSON_Parse(buf);
+	sensor_t *sensor = esp_camera_sensor_get();
+
+	int reg = JSON_GET_INT(root, "reg");
+	int mask = JSON_GET_INT(root, "mask");
+	int val;
+
+	if (reg != -1 && mask != -1)
+		APP_ERROR_CHECK((val = sensor->get_reg(sensor, reg, mask)) >= 0, "Something wrong", err_greg_with_resp);
+	else {
+		res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid or incomplete content");
+		APP_ERROR_CHECK(false, "", err_greg);
+	}
+
+	cJSON_Delete(root);
+
+	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+	char buf_val[20];
+	const char * stringval = itoa(val, buf_val, 10);
+	res = httpd_resp_send(req, stringval, strlen(stringval));
+
+	ESP_LOGI(APP_HTTPD_TAG, "Get Register: reg: 0x%02x, mask: 0x%02x, value: 0x%02x", reg, mask, val);
+	return res;
+err_greg_with_resp:
+	res = httpd_resp_send_500(req);
+err_greg:
+	if(!!root) cJSON_Delete(root);
 	return res;
 }
