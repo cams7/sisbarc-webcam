@@ -32,7 +32,7 @@ esp_err_t init_camera(void) {
     config.pin_sscb_scl = SIOC_GPIO_NUM;
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
-    config.xclk_freq_hz = 10000000;
+    config.xclk_freq_hz = 20000000;
     config.pixel_format = PIXFORMAT_JPEG;
     //init with high specs to pre-allocate larger buffers
     config.frame_size = FRAMESIZE_VGA;
@@ -50,7 +50,8 @@ esp_err_t init_camera(void) {
         s->set_saturation(s, -2);//lower the saturation
     }
     //drop down frame size for higher initial frame rate
-    s->set_framesize(s, FRAMESIZE_HD);
+    s->set_framesize(s, FRAMESIZE_VGA);
+    s->set_xclk(s, LEDC_TIMER_0, 10);
 
     return ESP_OK;
 err_init:

@@ -12,6 +12,7 @@ extern "C" {
 #endif
 
 #include "esp_err.h"
+#include "sensor.h"
 
 #define CAM_BOARD         "AI-THINKER"
 #define PWDN_GPIO_NUM     32
@@ -31,6 +32,34 @@ extern "C" {
 #define VSYNC_GPIO_NUM    25
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
+
+#define MIN_FRAMESIZE FRAMESIZE_96X96 //Resolution
+#define MAX_FRAMESIZE FRAMESIZE_UXGA
+#define MIN_QUALITY 4 //Quality
+#define MAX_QUALITY 63
+#define MIN_BRIGHTNESS -2 //Brightness
+#define MAX_BRIGHTNESS 2
+#define MIN_CONTRAST -2 //Contrast
+#define MAX_CONTRAST 2
+#define MIN_SATURATION -2 //Saturation
+#define MAX_SATURATION 2
+#define MIN_SHARPNESS -2
+#define MAX_SHARPNESS 2
+#define MIN_SPECIAL_EFFECT 0 //Special Effect
+#define MAX_SPECIAL_EFFECT 6
+#define MIN_WB_MODE 0 //WB Mode
+#define MAX_WB_MODE 4
+#define MIN_AE_LEVEL -2 //AE Level
+#define MAX_AE_LEVEL 2
+#define MIN_AEC_VALUE 0 //Exposure
+#define MAX_AEC_VALUE 1200
+#define MIN_AGC_GAIN 0 //Gain
+#define MAX_AGC_GAIN 30
+#define MIN_GAINCEILING GAINCEILING_2X //Gain Ceiling
+#define MAX_GAINCEILING GAINCEILING_128X
+
+#define MIN_XCLK_MHZ 1 //XCLK MHz
+#define MAX_XCLK_MHZ 20
 
 #define APP_CAMERA_TAG "app_camera"
 
