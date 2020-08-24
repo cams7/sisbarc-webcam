@@ -191,7 +191,7 @@ static void get_flash_info(esp_chip_info_t *chip_info, cJSON *root) {
 
 static esp_err_t system_info_handler(httpd_req_t *req) {
 	esp_err_t res;
-	httpd_resp_set_type(req, "application/json");
+	httpd_resp_set_type(req, CONTENT_TYPE_APPLICATION_JSON);
 	cJSON *root = cJSON_CreateObject();
 	esp_chip_info_t chip_info;
 	esp_chip_info(&chip_info);
@@ -213,7 +213,7 @@ static esp_err_t cam_status_handler(httpd_req_t *req) {
 	esp_err_t res;
 	sensor_t *s = esp_camera_sensor_get();
 
-	httpd_resp_set_type(req, "application/json");
+	httpd_resp_set_type(req, CONTENT_TYPE_APPLICATION_JSON);
 	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
 	cJSON *root = cJSON_CreateObject();
@@ -345,7 +345,7 @@ static esp_err_t cam_capture_handler(httpd_req_t *req) {
 
 	APP_ERROR_CHECK(!!fb, "Camera capture failed", err_capture_with_resp);
 
-	httpd_resp_set_type(req, "image/jpeg");
+	httpd_resp_set_type(req, CONTENT_TYPE_IMAGE_JPEG);
 	httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
 	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
@@ -381,7 +381,9 @@ static char* getBuffer(httpd_req_t *req, esp_err_t *res) {
 
 	if (total_len >= SCRATCH_BUFSIZE) {
 		/* Respond with 500 Internal Server Error */
-		*res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content too long");
+		httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
+		httpd_resp_set_status(req, _400_BAD_REQUEST);
+		*res = httpd_resp_sendstr(req, "Content too long");
 		APP_ERROR_CHECK(false, "", err_set_buffer);
 	}
 
@@ -394,7 +396,9 @@ static char* getBuffer(httpd_req_t *req, esp_err_t *res) {
 		received = httpd_req_recv(req, buffer + cur_len, total_len);
 		if (received <= 0) {
 			/* Respond with 500 Internal Server Error */
-			*res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to post control value");
+			httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
+			httpd_resp_set_status(req, _400_BAD_REQUEST);
+			*res = httpd_resp_sendstr(req, "Failed to post control value");
 			APP_ERROR_CHECK(false, "", err_set_buffer);
 		}
 		cur_len += received;
@@ -406,474 +410,499 @@ err_set_buffer:
 	return NULL;
 }
 
+
 static esp_err_t cam_cmd_handler(httpd_req_t *req) {
 	esp_err_t res;
-	cJSON *root = NULL;
+	cJSON *req_content = NULL;
+	cJSON *res_content = NULL;
 	char *buf;
 
 	APP_ERROR_CHECK(!!(buf = getBuffer(req, &res)), "An error occurred while loading the buffer", err_cmd);
 
-	root = cJSON_Parse(buf);
-	sensor_t *sensor = esp_camera_sensor_get();
+	httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
 
-	int framesize = JSON_GET_INT(root, "framesize");
+	req_content = cJSON_Parse(buf);
+	sensor_t *sensor = esp_camera_sensor_get();
+	
+	bool hasError = false;
+	res_content = cJSON_CreateObject();
+
+	int framesize = JSON_GET_INT(req_content, "framesize");
 	bool isValidFramesize = false;
 
 	if (framesize != JSON_INT_ATTR_NOTFOUND && sensor->pixformat == PIXFORMAT_JPEG) {
 		if(framesize < MIN_FRAMESIZE || framesize > MAX_FRAMESIZE) {
-			char message[43];
-			sprintf(message, "framesize value should be between %d and %d", MIN_FRAMESIZE, MAX_FRAMESIZE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[33];
+			sprintf(message, "Value should be between %d and %d", MIN_FRAMESIZE, MAX_FRAMESIZE);
+			cJSON_AddStringToObject(res_content, "framesize", message);
+			hasError = true;
 		}
 		isValidFramesize = true;
 	}
 
-	int quality = JSON_GET_INT(root, "quality");
+	int quality = JSON_GET_INT(req_content, "quality");
 	bool isValidQuality = false;
 
 	if (quality != JSON_INT_ATTR_NOTFOUND) {
 		if(quality < MIN_QUALITY || quality > MAX_QUALITY) {
-			char message[41];
-			sprintf(message, "quality value should be between %d and %d", MIN_QUALITY, MAX_QUALITY);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[33];
+			sprintf(message, "Value should be between %d and %d", MIN_QUALITY, MAX_QUALITY);
+			cJSON_AddStringToObject(res_content, "quality", message);
+			hasError = true;
 		}
 		isValidQuality = true;
 	}
 
-	int contrast = JSON_GET_INT(root, "contrast");
+	int contrast = JSON_GET_INT(req_content, "contrast");
 	bool isValidContrast = false;
 
 	if (contrast != JSON_INT_ATTR_NOTFOUND) {
 		if(contrast < MIN_CONTRAST || contrast > MAX_CONTRAST) {
-			char message[42];
-			sprintf(message, "contrast value should be between %d and %d", MIN_CONTRAST, MAX_CONTRAST);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[33];
+			sprintf(message, "Value should be between %d and %d", MIN_CONTRAST, MAX_CONTRAST);
+			cJSON_AddStringToObject(res_content, "contrast", message);
+			hasError = true;
 		}
 		isValidContrast = true;
 	}
 
-	int brightness = JSON_GET_INT(root, "brightness");
+	int brightness = JSON_GET_INT(req_content, "brightness");
 	bool isValidBrightness = false;
 
 	if (brightness != JSON_INT_ATTR_NOTFOUND) {
 		if(brightness < MIN_BRIGHTNESS || brightness > MAX_BRIGHTNESS) {
-			char message[44];
-			sprintf(message, "brightness value should be between %d and %d", MIN_BRIGHTNESS, MAX_BRIGHTNESS);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[33];
+			sprintf(message, "Value should be between %d and %d", MIN_BRIGHTNESS, MAX_BRIGHTNESS);
+			cJSON_AddStringToObject(res_content, "brightness", message);
+			hasError = true;
 		}
 		isValidBrightness = true;
 	}
 
-	int saturation = JSON_GET_INT(root, "saturation");
+	int saturation = JSON_GET_INT(req_content, "saturation");
 	bool isValidSaturation = false;
 
 	if (saturation != JSON_INT_ATTR_NOTFOUND) {
 		if(saturation < MIN_SATURATION || saturation > MAX_SATURATION) {
-			char message[44];
-			sprintf(message, "saturation value should be between %d and %d", MIN_SATURATION, MAX_SATURATION);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[33];
+			sprintf(message, "Value should be between %d and %d", MIN_SATURATION, MAX_SATURATION);
+			cJSON_AddStringToObject(res_content, "saturation", message);
+			hasError = true;
 		}
 		isValidSaturation = true;
 	}
 
-	int gainceiling = JSON_GET_INT(root, "gainceiling");
+	int gainceiling = JSON_GET_INT(req_content, "gainceiling");
 	bool isValidGainceiling = false;
 
 	if (gainceiling != JSON_INT_ATTR_NOTFOUND) {
 		if(gainceiling < MIN_GAINCEILING || gainceiling > MAX_GAINCEILING) {
-			char message[44];
-			sprintf(message, "gainceiling value should be between %d and %d", MIN_GAINCEILING, MAX_GAINCEILING);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[33];
+			sprintf(message, "Value should be between %d and %d", MIN_GAINCEILING, MAX_GAINCEILING);
+			cJSON_AddStringToObject(res_content, "gainceiling", message);
+			hasError = true;
 		}
 		isValidGainceiling = true;
 	}
 
-	int colorbar = JSON_GET_INT(root, "colorbar");
+	int colorbar = JSON_GET_INT(req_content, "colorbar");
 	bool isValidColorbar = false;
 
 	if (colorbar != JSON_INT_ATTR_NOTFOUND) {
 		if(colorbar != JSON_ATTR_FALSE && colorbar != JSON_ATTR_TRUE) {
-			char message[30];
-			sprintf(message, "colorbar value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "colorbar", message);
+			hasError = true;
 		}
 		isValidColorbar = true;
 	}
 
-	int awb = JSON_GET_INT(root, "awb");
+	int awb = JSON_GET_INT(req_content, "awb");
 	bool isValidAwb = false;
 
 	if (awb != JSON_INT_ATTR_NOTFOUND) {
 		if(awb != JSON_ATTR_FALSE && awb != JSON_ATTR_TRUE) {
-			char message[25];
-			sprintf(message, "awb value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "awb", message);
+			hasError = true;
 		}
 		isValidAwb = true;
 	}
 
-	int agc = JSON_GET_INT(root, "agc");
+	int agc = JSON_GET_INT(req_content, "agc");
 	bool isValidAgc = false;
 
 	if (agc != JSON_INT_ATTR_NOTFOUND) {
 		if(agc != JSON_ATTR_FALSE && agc != JSON_ATTR_TRUE) {
-			char message[25];
-			sprintf(message, "agc value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "agc", message);
+			hasError = true;
 		}
 		isValidAgc = true;
 	}
 
-	int aec = JSON_GET_INT(root, "aec");
+	int aec = JSON_GET_INT(req_content, "aec");
 	bool isValidAec = false;
 
 	if (aec != JSON_INT_ATTR_NOTFOUND) {
 		if(aec != JSON_ATTR_FALSE && aec != JSON_ATTR_TRUE) {
-			char message[25];
-			sprintf(message, "aec value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "aec", message);
+			hasError = true;
 		}
 		isValidAec = true;
 	}
 
-	int hmirror = JSON_GET_INT(root, "hmirror");
+	int hmirror = JSON_GET_INT(req_content, "hmirror");
 	bool isValidHMirror = false;
 
 	if (hmirror != JSON_INT_ATTR_NOTFOUND) {
 		if(hmirror != JSON_ATTR_FALSE && hmirror != JSON_ATTR_TRUE) {
-			char message[29];
-			sprintf(message, "hmirror value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "hmirror", message);
+			hasError = true;
 		}
 		isValidHMirror = true;
 	}
 
-	int vflip = JSON_GET_INT(root, "vflip");
+	int vflip = JSON_GET_INT(req_content, "vflip");
 	bool isValidVFlip = false;
 
 	if (vflip != JSON_INT_ATTR_NOTFOUND) {
 		if(vflip != JSON_ATTR_FALSE && vflip != JSON_ATTR_TRUE) {
-			char message[27];
-			sprintf(message, "vflip value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "vflip", message);
+			hasError = true;
 		}
 		isValidVFlip = true;
 	}
 
-	int awb_gain = JSON_GET_INT(root, "awb_gain");
+	int awb_gain = JSON_GET_INT(req_content, "awb_gain");
 	bool isValidAwbGain = false;
 
 	if (awb_gain != JSON_INT_ATTR_NOTFOUND) {
 		if(awb_gain != JSON_ATTR_FALSE && awb_gain != JSON_ATTR_TRUE) {
-			char message[30];
-			sprintf(message, "awb_gain value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "awb_gain", message);
+			hasError = true;
 		}
 		isValidAwbGain = true;
 	}
 
-	int agc_gain = JSON_GET_INT(root, "agc_gain");
+	int agc_gain = JSON_GET_INT(req_content, "agc_gain");
 	bool isValidAgcGain = false;
 
 	if (agc_gain != JSON_INT_ATTR_NOTFOUND) {
 		if(agc_gain < MIN_AGC_GAIN || agc_gain > MAX_AGC_GAIN) {
-			char message[42];
-			sprintf(message, "agc_gain value should be between %d and %d", MIN_AGC_GAIN, MAX_AGC_GAIN);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[33];
+			sprintf(message, "Value should be between %d and %d", MIN_AGC_GAIN, MAX_AGC_GAIN);
+			cJSON_AddStringToObject(res_content, "agc_gain", message);
+			hasError = true;
 		}
 		isValidAgcGain = true;
 	}
 
-	int aec_value = JSON_GET_INT(root, "aec_value");
+	int aec_value = JSON_GET_INT(req_content, "aec_value");
 	bool isValidAecValue = false;
 
 	if (aec_value != JSON_INT_ATTR_NOTFOUND) {
 		if(aec_value < MIN_AEC_VALUE || aec_value > MAX_AEC_VALUE) {
-			char message[45];
-			sprintf(message, "aec_value value should be between %d and %d", MIN_AEC_VALUE, MAX_AEC_VALUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[35];
+			sprintf(message, "Value should be between %d and %d", MIN_AEC_VALUE, MAX_AEC_VALUE);
+			cJSON_AddStringToObject(res_content, "aec_value", message);
+			hasError = true;
 		}
 		isValidAecValue = true;
 	}
 
-	int aec2 = JSON_GET_INT(root, "aec2");
+	int aec2 = JSON_GET_INT(req_content, "aec2");
 	bool isValidAec2 = false;
 
 	if (aec2 != JSON_INT_ATTR_NOTFOUND) {
 		if(aec2 != JSON_ATTR_FALSE && aec2 != JSON_ATTR_TRUE) {
-			char message[26];
-			sprintf(message, "aec2 value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "aec2", message);
+			hasError = true;
 		}
 		isValidAec2 = true;
 	}
 
-	int dcw = JSON_GET_INT(root, "dcw");
+	int dcw = JSON_GET_INT(req_content, "dcw");
 	bool isValidDcw = false;
 
 	if (dcw != JSON_INT_ATTR_NOTFOUND) {
 		if(dcw != JSON_ATTR_FALSE && dcw != JSON_ATTR_TRUE) {
-			char message[25];
-			sprintf(message, "dcw value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "dcw", message);
+			hasError = true;
 		}
 		isValidDcw = true;
 	}
 
-	int bpc = JSON_GET_INT(root, "bpc");
+	int bpc = JSON_GET_INT(req_content, "bpc");
 	bool isValidBpc = false;
 
 	if (bpc != JSON_INT_ATTR_NOTFOUND) {
 		if(bpc != JSON_ATTR_FALSE && bpc != JSON_ATTR_TRUE) {
-			char message[25];
-			sprintf(message, "bpc value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "bpc", message);
+			hasError = true;
 		}
 		isValidBpc = true;
 	}
 
-	int wpc = JSON_GET_INT(root, "wpc");
+	int wpc = JSON_GET_INT(req_content, "wpc");
 	bool isValidWpc = false;
 
 	if (wpc != JSON_INT_ATTR_NOTFOUND) {
 		if(wpc != JSON_ATTR_FALSE && wpc != JSON_ATTR_TRUE) {
-			char message[25];
-			sprintf(message, "wpc value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "wpc", message);
+			hasError = true;
 		}
 		isValidWpc = true;
 	}
 
-	int raw_gma = JSON_GET_INT(root, "raw_gma");
+	int raw_gma = JSON_GET_INT(req_content, "raw_gma");
 	bool isValidRawGma = false;
 
 	if (raw_gma != JSON_INT_ATTR_NOTFOUND) {
 		if(raw_gma != JSON_ATTR_FALSE && raw_gma != JSON_ATTR_TRUE) {
-			char message[29];
-			sprintf(message, "raw_gma value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "raw_gma", message);
+			hasError = true;
 		}
 		isValidRawGma = true;
 	}
 
-	int lenc = JSON_GET_INT(root, "lenc");
+	int lenc = JSON_GET_INT(req_content, "lenc");
 	bool isValidLenc = false;
 
 	if (lenc != JSON_INT_ATTR_NOTFOUND) {
 		if(lenc != JSON_ATTR_FALSE && lenc != JSON_ATTR_TRUE) {
-			char message[26];
-			sprintf(message, "lenc value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[21];
+			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+			cJSON_AddStringToObject(res_content, "lenc", message);
+			hasError = true;
 		}
 		isValidLenc = true;
 	}
 
-	int special_effect = JSON_GET_INT(root, "special_effect");
+	int special_effect = JSON_GET_INT(req_content, "special_effect");
 	bool isValidSpecialEffect = false;
 
 	if (special_effect != JSON_INT_ATTR_NOTFOUND) {
 		if(special_effect < MIN_SPECIAL_EFFECT || special_effect > MAX_SPECIAL_EFFECT) {
-			char message[47];
-			sprintf(message, "special_effect value should be between %d and %d", MIN_SPECIAL_EFFECT, MAX_SPECIAL_EFFECT);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[33];
+			sprintf(message, "Value should be between %d and %d", MIN_SPECIAL_EFFECT, MAX_SPECIAL_EFFECT);
+			cJSON_AddStringToObject(res_content, "special_effect", message);
+			hasError = true;
 		}
 		isValidSpecialEffect = true;
 	}
 
-	int wb_mode = JSON_GET_INT(root, "wb_mode");
+	int wb_mode = JSON_GET_INT(req_content, "wb_mode");
 	bool isValidWbMode = false;
 
 	if (wb_mode != JSON_INT_ATTR_NOTFOUND) {
 		if(wb_mode < MIN_WB_MODE || wb_mode > MAX_WB_MODE) {
-			char message[40];
-			sprintf(message, "wb_mode value should be between %d and %d", MIN_WB_MODE, MAX_WB_MODE);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[33];
+			sprintf(message, "Value should be between %d and %d", MIN_WB_MODE, MAX_WB_MODE);
+			cJSON_AddStringToObject(res_content, "wb_mode", message);
+			hasError = true;
 		}
 		isValidWbMode = true;
 	}
 
-	int ae_level = JSON_GET_INT(root, "ae_level");
+	int ae_level = JSON_GET_INT(req_content, "ae_level");
 	bool isValidAeLevel = false;
 
 	if (ae_level != JSON_INT_ATTR_NOTFOUND) {
 		if(ae_level < MIN_AE_LEVEL || ae_level > MAX_AE_LEVEL) {
-			char message[42];
-			sprintf(message, "ae_level value should be between %d and %d", MIN_AE_LEVEL, MAX_AE_LEVEL);
-			res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
-			APP_ERROR_CHECK(false, "", err_cmd);
+			char message[33];
+			sprintf(message, "Value should be between %d and %d", MIN_AE_LEVEL, MAX_AE_LEVEL);
+			cJSON_AddStringToObject(res_content, "ae_level", message);
+			hasError = true;
 		}
 		isValidAeLevel = true;
 	}
 
+	if(hasError) {
+		char *message = cJSON_Print(res_content);
+		httpd_resp_set_type(req, CONTENT_TYPE_APPLICATION_JSON);
+		httpd_resp_set_status(req, _400_BAD_REQUEST);
+		res = httpd_resp_sendstr(req, message);
+		free(message);
+		APP_ERROR_CHECK(false, "", err_cmd);
+	}
 
 	//Resolution
 	if(isValidFramesize && !!sensor->set_framesize(sensor, (framesize_t)framesize)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change framesize");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "framesize", "Something wrong");
+		hasError = true;
 	}
 
 	//Quality
 	if(isValidQuality && !!sensor->set_quality(sensor, quality)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change quality");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "quality", "Something wrong");
+		hasError = true;
 	}
 
 	//Contrast
 	if(isValidContrast && !!sensor->set_contrast(sensor, contrast)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change contrast");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "contrast", "Something wrong");
+		hasError = true;
 	}
 
 	//Brightness
 	if(isValidBrightness && !!sensor->set_brightness(sensor, brightness)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change brightness");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "brightness", "Something wrong");
+		hasError = true;
 	}
 
 	//Saturation
 	if(isValidSaturation && !!sensor->set_saturation(sensor, saturation)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change saturation");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "saturation", "Something wrong");
+		hasError = true;
 	}
 
 	//Gain Ceiling
 	if(isValidGainceiling && !!sensor->set_gainceiling(sensor, (gainceiling_t)gainceiling)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change gainceiling");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "gainceiling", "Something wrong");
+		hasError = true;
 	}
 
 	//Color Bar
 	if(isValidColorbar && !!sensor->set_colorbar(sensor, colorbar)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change colorbar");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "colorbar", "Something wrong");
+		hasError = true;
 	}
 
 	//AWB
 	if(isValidAwb && !!sensor->set_whitebal(sensor, awb)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change awb");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "awb", "Something wrong");
+		hasError = true;
 	}
 
 	//AGC
 	if(isValidAgc && !!sensor->set_gain_ctrl(sensor, agc)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change agc");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "agc", "Something wrong");
+		hasError = true;
 	}
 
 	//AEC SENSOR
 	if(isValidAec && !!sensor->set_exposure_ctrl(sensor, aec)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change aec");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "aec", "Something wrong");
+		hasError = true;
 	}
 
 	//H-Mirror
 	if(isValidHMirror && !!sensor->set_hmirror(sensor, hmirror)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change hmirror");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "hmirror", "Something wrong");
+		hasError = true;
 	}
 
 	//V-Flip
 	if(isValidVFlip && !!sensor->set_vflip(sensor, vflip)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change vflip");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "vflip", "Something wrong");
+		hasError = true;
 	}
 
 	//AWB Gain
 	if(isValidAwbGain && !!sensor->set_awb_gain(sensor, awb_gain)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change awb_gain");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "awb_gain", "Something wrong");
+		hasError = true;
 	}
 
 	//Gain
 	if(isValidAgcGain && !!sensor->set_agc_gain(sensor, agc_gain)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change agc_gain");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "agc_gain", "Something wrong");
+		hasError = true;
 	}
 
 	//Exposure
 	if(isValidAecValue && !!sensor->set_aec_value(sensor, aec_value)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change aec_value");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "aec_value", "Something wrong");
+		hasError = true;
 	}
 
 	//AEC DSP
 	if(isValidAec2 && !!sensor->set_aec2(sensor, aec2)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change aec2");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "aec2", "Something wrong");
+		hasError = true;
 	}
 
 	//DCW (Downsize EN)
 	if(isValidDcw && !!sensor->set_dcw(sensor, dcw)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change dcw");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "dcw", "Something wrong");
+		hasError = true;
 	}
 
 	//BPC
 	if(isValidBpc && !!sensor->set_bpc(sensor, bpc)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change bpc");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "bpc", "Something wrong");
+		hasError = true;
 	}
 
 	//WPC
 	if(isValidWpc && !!sensor->set_wpc(sensor, wpc)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change wpc");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "wpc", "Something wrong");
+		hasError = true;
 	}
 
 	//Raw GMA
 	if(isValidRawGma && !!sensor->set_raw_gma(sensor, raw_gma)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change raw_gma");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "raw_gma", "Something wrong");
+		hasError = true;
 	}
 
 	//Lens Correction
 	if(isValidLenc && !!sensor->set_lenc(sensor, lenc)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change lenc");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "lenc", "Something wrong");
+		hasError = true;
 	}
 
 	//Special Effect
 	if(isValidSpecialEffect && !!sensor->set_special_effect(sensor, special_effect)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change special_effect");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "special_effect", "Something wrong");
+		hasError = true;
 	}
 
 	//WB Mode
 	if(isValidWbMode && !!sensor->set_wb_mode(sensor, wb_mode)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change wb_mode");
-		APP_ERROR_CHECK(false, "", err_cmd);
+		cJSON_AddStringToObject(res_content, "wb_mode", "Something wrong");
+		hasError = true;
 	}
 
 	//AE Level
 	if(isValidAeLevel && !!sensor->set_ae_level(sensor, ae_level)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change ae_level");
+		cJSON_AddStringToObject(res_content, "ae_level", "Something wrong");
+		hasError = true;
+	}
+
+	if(hasError) {
+		char *message = cJSON_Print(res_content);
+		httpd_resp_set_type(req, CONTENT_TYPE_APPLICATION_JSON);
+		httpd_resp_set_status(req, _500_INTERNAL_SERVER_ERROR);
+		res = httpd_resp_sendstr(req, message);
+		free(message);
 		APP_ERROR_CHECK(false, "", err_cmd);
 	}
 
-	cJSON_Delete(root);
+	cJSON_Delete(req_content);
+	cJSON_Delete(res_content);
 
 	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 	res = httpd_resp_send(req, NULL, 0);
@@ -907,40 +936,46 @@ static esp_err_t cam_cmd_handler(httpd_req_t *req) {
 	);
 	return res;
 err_cmd:
-	if(!!root) cJSON_Delete(root);
+	if(!!req_content) cJSON_Delete(req_content);
+	if(!!res_content) cJSON_Delete(res_content);
 	return res;
 }
 
 static esp_err_t cam_xclk_handler(httpd_req_t *req) {
 	esp_err_t res;
-	cJSON *root = NULL;
+	cJSON *req_content = NULL;
 	char *buf;
 
 	APP_ERROR_CHECK(!!(buf = getBuffer(req, &res)), "An error occurred while loading the buffer", err_xclk);
 
-	root = cJSON_Parse(buf);
+	httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
+
+	req_content = cJSON_Parse(buf);
 	sensor_t *sensor = esp_camera_sensor_get();
 
-	int xclk = JSON_GET_INT(root, "xclk");
+	int xclk = JSON_GET_INT(req_content, "xclk");
 
 	if (xclk == JSON_INT_ATTR_NOTFOUND) {
-		res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid content");
+		httpd_resp_set_status(req, _400_BAD_REQUEST);
+		res = httpd_resp_sendstr(req, "Invalid content");
 		APP_ERROR_CHECK(false, "", err_xclk);
 	}
 
 	if(xclk < MIN_XCLK_MHZ || xclk > MAX_XCLK_MHZ) {
-		char message[38];
-		sprintf(message, "xclk value should be between %d and %d", MIN_XCLK_MHZ, MAX_XCLK_MHZ);
-		res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, message);
+		char message[33];
+		sprintf(message, "Value should be between %d and %d", MIN_XCLK_MHZ, MAX_XCLK_MHZ);
+		httpd_resp_set_status(req, _400_BAD_REQUEST);
+		res = httpd_resp_sendstr(req, message);
 		APP_ERROR_CHECK(false, "", err_xclk);
 	}
 
 	if(!!sensor->set_xclk(sensor, LEDC_TIMER_0, xclk)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change xclk");
+		httpd_resp_set_status(req, _500_INTERNAL_SERVER_ERROR);
+		res = httpd_resp_sendstr(req, "Something wrong");
 		APP_ERROR_CHECK(false, "", err_xclk);
 	}
 
-	cJSON_Delete(root);
+	cJSON_Delete(req_content);
 
 	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 	res = httpd_resp_send(req, NULL, 0);
@@ -948,35 +983,39 @@ static esp_err_t cam_xclk_handler(httpd_req_t *req) {
 	ESP_LOGI(APP_HTTPD_TAG, "Set XCLK: %d MHz", xclk);
 	return res;
 err_xclk:
-	if(!!root) cJSON_Delete(root);
+	if(!!req_content) cJSON_Delete(req_content);
 	return res;
 }
 
 static esp_err_t cam_reg_handler(httpd_req_t *req) {
 	esp_err_t res;
-	cJSON *root = NULL;
+	cJSON *req_content = NULL;
 	char *buf;
 
 	APP_ERROR_CHECK(!!(buf = getBuffer(req, &res)), "An error occurred while loading the buffer", err_reg);
 
-	root = cJSON_Parse(buf);
+	httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
+
+	req_content = cJSON_Parse(buf);
 	sensor_t *sensor = esp_camera_sensor_get();
 
-	int reg = JSON_GET_INT(root, "reg");
-	int mask = JSON_GET_INT(root, "mask");
-	int val = JSON_GET_INT(root, "val");
+	int reg = JSON_GET_INT(req_content, "reg");
+	int mask = JSON_GET_INT(req_content, "mask");
+	int val = JSON_GET_INT(req_content, "val");
 
 	if (reg == JSON_INT_ATTR_NOTFOUND || mask == JSON_INT_ATTR_NOTFOUND || val == JSON_INT_ATTR_NOTFOUND) {
-		res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid content");
+		httpd_resp_set_status(req, _400_BAD_REQUEST);
+		res = httpd_resp_sendstr(req, "Invalid content");
 		APP_ERROR_CHECK(false, "", err_reg);
 	}
 
 	if(!!sensor->set_reg(sensor, reg, mask, val)) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to change reg, mask or val");
+		httpd_resp_set_status(req, _500_INTERNAL_SERVER_ERROR);
+		res = httpd_resp_sendstr(req, "Something wrong");
 		APP_ERROR_CHECK(false, "", err_reg);
 	}
 
-	cJSON_Delete(root);
+	cJSON_Delete(req_content);
 
 	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 	res = httpd_resp_send(req, NULL, 0);
@@ -984,35 +1023,39 @@ static esp_err_t cam_reg_handler(httpd_req_t *req) {
 	ESP_LOGI(APP_HTTPD_TAG, "Set Register: reg: 0x%02x, mask: 0x%02x, value: 0x%02x", reg, mask, val);
 	return res;
 err_reg:
-	if(!!root) cJSON_Delete(root);
+	if(!!req_content) cJSON_Delete(req_content);
 	return res;
 }
 
 static esp_err_t cam_greg_handler(httpd_req_t *req) {
 	esp_err_t res;
-	cJSON *root = NULL;
+	cJSON *req_content = NULL;
 	char *buf;
 
 	APP_ERROR_CHECK(!!(buf = getBuffer(req, &res)), "An error occurred while loading the buffer", err_greg);
 
-	root = cJSON_Parse(buf);
+	httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
+
+	req_content = cJSON_Parse(buf);
 	sensor_t *sensor = esp_camera_sensor_get();
 
-	int reg = JSON_GET_INT(root, "reg");
-	int mask = JSON_GET_INT(root, "mask");
+	int reg = JSON_GET_INT(req_content, "reg");
+	int mask = JSON_GET_INT(req_content, "mask");
 	int val;
 
 	if (reg == JSON_INT_ATTR_NOTFOUND || mask == JSON_INT_ATTR_NOTFOUND) {
-		res = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid content");
+		httpd_resp_set_status(req, _400_BAD_REQUEST);
+		res = httpd_resp_sendstr(req, "Invalid content");
 		APP_ERROR_CHECK(false, "", err_greg);
 	}
 
 	if((val = sensor->get_reg(sensor, reg, mask)) < 0) {
-		res = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "An error occurred when try to get value");
+		httpd_resp_set_status(req, _500_INTERNAL_SERVER_ERROR);
+		res = httpd_resp_sendstr(req, "Something wrong");
 		APP_ERROR_CHECK(false, "", err_greg);
 	}
 
-	cJSON_Delete(root);
+	cJSON_Delete(req_content);
 
 	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 	char buf_val[20];
@@ -1022,6 +1065,6 @@ static esp_err_t cam_greg_handler(httpd_req_t *req) {
 	ESP_LOGI(APP_HTTPD_TAG, "Get Register: reg: 0x%02x, mask: 0x%02x, value: 0x%02x", reg, mask, val);
 	return res;
 err_greg:
-	if(!!root) cJSON_Delete(root);
+	if(!!req_content) cJSON_Delete(req_content);
 	return res;
 }
