@@ -5,6 +5,7 @@
  *      Author: ceanm
  */
 
+#include <stdarg.h>
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_spi_flash.h"
@@ -17,6 +18,8 @@
 #include "app_common.h"
 #include "app_httpd.h"
 #include "app_camera.h"
+
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
 
 #ifdef CONFIG_IDF_TARGET_ESP32
 #define CHIP_NAME "ESP32"
@@ -152,7 +155,9 @@ static void clear_get_json(cJSON *root, char *sys_info) {
 
 static esp_err_t send_json_error(httpd_req_t *req, cJSON *root, char *sys_info) {
 	clear_get_json(root, sys_info);
-	return httpd_resp_send_500(req);
+	httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
+	httpd_resp_set_status(req, _500_INTERNAL_SERVER_ERROR);
+	return httpd_resp_sendstr(req, "Something wrong");
 }
 
 static void get_chip_info(esp_chip_info_t *chip_info, cJSON *root) {
@@ -319,7 +324,9 @@ static esp_err_t cam_stream_handler(httpd_req_t *req) {
 	res = ESP_OK;
 	return res;
 err_stream_with_resp:
-	res = httpd_resp_send_500(req);
+	httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
+	httpd_resp_set_status(req, _500_INTERNAL_SERVER_ERROR);
+	res = httpd_resp_sendstr(req, "Something wrong");
 err_stream:
 	if (!!_jpg_buf) free(_jpg_buf);
 	return res;
@@ -370,7 +377,9 @@ static esp_err_t cam_capture_handler(httpd_req_t *req) {
 
 	return res;
 err_capture_with_resp:
-	res = httpd_resp_send_500(req);
+	httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
+	httpd_resp_set_status(req, _500_INTERNAL_SERVER_ERROR);
+	res = httpd_resp_sendstr(req, "Something wrong");
 err_capture:
 	return res;
 }
@@ -410,6 +419,79 @@ err_set_buffer:
 	return NULL;
 }
 
+typedef enum {
+    VAL_BETWEEN, // Validates if a value is between an interval
+    VAL_BOOL,    // Validates if a value is 0 or 1
+} validation_type;
+
+static bool validateBetweenIntVal(cJSON *res_content, const char* attr, const int* val, const int16_t min, const int16_t max) {
+	bool isValid = true;
+
+	if(*val < min || *val > max) {
+		char message[42];
+		sprintf(message, "Value should be between %d and %d", min, max);
+		cJSON_AddStringToObject(res_content, attr, message);
+		isValid = false;
+	}
+
+	return isValid;
+}
+
+static bool validateBoolVal(cJSON *res_content, const char* attr, const int* val) {
+	bool isValid = true;
+
+	if(*val != JSON_ATTR_FALSE && *val != JSON_ATTR_TRUE) {
+		char message[21];
+		sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
+		cJSON_AddStringToObject(res_content, attr, message);
+		isValid = false;
+	}
+
+	return isValid;
+}
+
+static int getAttrIntVal(cJSON *req_content, cJSON *res_content, const char* attr, validation_type validationType, bool isOk, bool *hasError, const uint8_t total_args, ...) {
+	int val = JSON_GET_INT(req_content, attr);
+	if (val != JSON_INT_ATTR_NOTFOUND && isOk) {
+		switch (validationType) {
+			case VAL_BETWEEN: {
+				va_list valist;
+				va_start(valist, total_args);
+				const int min = va_arg(valist, int);
+				const int max = va_arg(valist, int);
+				va_end(valist);
+
+				if(!validateBetweenIntVal(res_content, attr, &val, min, max))
+					*hasError = true;
+				break;
+			}
+			case VAL_BOOL:
+				if(!validateBoolVal(res_content, attr, &val))
+					*hasError = true;
+				break;
+			default:
+				break;
+		}
+	}
+	return val;
+}
+
+static void setSensorIntVal(sensor_t *sensor, cJSON *res_content, const char* attr, int* val, bool *hasError, int (*f)(sensor_t*, int)) {
+	if(*val != JSON_INT_ATTR_NOTFOUND && !!(*f)(sensor, *val)) {
+		cJSON_AddStringToObject(res_content, attr, "Something wrong");
+		*hasError = true;
+	}
+}
+
+static esp_err_t resp_send_json(httpd_req_t *req, cJSON *res_content, char* httpStatus) {
+	esp_err_t res;
+	char *message = cJSON_Print(res_content);
+	httpd_resp_set_type(req, CONTENT_TYPE_APPLICATION_JSON);
+	httpd_resp_set_status(req, httpStatus);
+	res = httpd_resp_sendstr(req, message);
+	free(message);
+	return res;
+}
 
 static esp_err_t cam_cmd_handler(httpd_req_t *req) {
 	esp_err_t res;
@@ -427,477 +509,133 @@ static esp_err_t cam_cmd_handler(httpd_req_t *req) {
 	bool hasError = false;
 	res_content = cJSON_CreateObject();
 
-	int framesize = JSON_GET_INT(req_content, "framesize");
-	bool isValidFramesize = false;
+	int framesize = getAttrIntVal(req_content, res_content, "framesize", VAL_BETWEEN, sensor->pixformat == PIXFORMAT_JPEG, &hasError, 2, MIN_FRAMESIZE, MAX_FRAMESIZE);
 
-	if (framesize != JSON_INT_ATTR_NOTFOUND && sensor->pixformat == PIXFORMAT_JPEG) {
-		if(framesize < MIN_FRAMESIZE || framesize > MAX_FRAMESIZE) {
-			char message[33];
-			sprintf(message, "Value should be between %d and %d", MIN_FRAMESIZE, MAX_FRAMESIZE);
-			cJSON_AddStringToObject(res_content, "framesize", message);
-			hasError = true;
-		}
-		isValidFramesize = true;
-	}
+	int quality = getAttrIntVal(req_content, res_content, "quality", VAL_BETWEEN, true, &hasError, 2, MIN_QUALITY, MAX_QUALITY);
 
-	int quality = JSON_GET_INT(req_content, "quality");
-	bool isValidQuality = false;
+	int contrast = getAttrIntVal(req_content, res_content, "contrast", VAL_BETWEEN, true, &hasError, 2, MIN_CONTRAST, MAX_CONTRAST);
 
-	if (quality != JSON_INT_ATTR_NOTFOUND) {
-		if(quality < MIN_QUALITY || quality > MAX_QUALITY) {
-			char message[33];
-			sprintf(message, "Value should be between %d and %d", MIN_QUALITY, MAX_QUALITY);
-			cJSON_AddStringToObject(res_content, "quality", message);
-			hasError = true;
-		}
-		isValidQuality = true;
-	}
+	int brightness = getAttrIntVal(req_content, res_content, "brightness", VAL_BETWEEN, true, &hasError, 2, MIN_BRIGHTNESS, MAX_BRIGHTNESS);
 
-	int contrast = JSON_GET_INT(req_content, "contrast");
-	bool isValidContrast = false;
+	int saturation = getAttrIntVal(req_content, res_content, "saturation", VAL_BETWEEN, true, &hasError, 2, MIN_SATURATION, MAX_SATURATION);
 
-	if (contrast != JSON_INT_ATTR_NOTFOUND) {
-		if(contrast < MIN_CONTRAST || contrast > MAX_CONTRAST) {
-			char message[33];
-			sprintf(message, "Value should be between %d and %d", MIN_CONTRAST, MAX_CONTRAST);
-			cJSON_AddStringToObject(res_content, "contrast", message);
-			hasError = true;
-		}
-		isValidContrast = true;
-	}
+	int gainceiling = getAttrIntVal(req_content, res_content, "gainceiling", VAL_BETWEEN, true, &hasError, 2, MIN_GAINCEILING, MAX_GAINCEILING);
 
-	int brightness = JSON_GET_INT(req_content, "brightness");
-	bool isValidBrightness = false;
+	int colorbar = getAttrIntVal(req_content, res_content, "colorbar", VAL_BOOL, true, &hasError, 0);
 
-	if (brightness != JSON_INT_ATTR_NOTFOUND) {
-		if(brightness < MIN_BRIGHTNESS || brightness > MAX_BRIGHTNESS) {
-			char message[33];
-			sprintf(message, "Value should be between %d and %d", MIN_BRIGHTNESS, MAX_BRIGHTNESS);
-			cJSON_AddStringToObject(res_content, "brightness", message);
-			hasError = true;
-		}
-		isValidBrightness = true;
-	}
+	int awb = getAttrIntVal(req_content, res_content, "awb", VAL_BOOL, true, &hasError, 0);
 
-	int saturation = JSON_GET_INT(req_content, "saturation");
-	bool isValidSaturation = false;
+	int agc = getAttrIntVal(req_content, res_content, "agc", VAL_BOOL, true, &hasError, 0);
 
-	if (saturation != JSON_INT_ATTR_NOTFOUND) {
-		if(saturation < MIN_SATURATION || saturation > MAX_SATURATION) {
-			char message[33];
-			sprintf(message, "Value should be between %d and %d", MIN_SATURATION, MAX_SATURATION);
-			cJSON_AddStringToObject(res_content, "saturation", message);
-			hasError = true;
-		}
-		isValidSaturation = true;
-	}
+	int aec = getAttrIntVal(req_content, res_content, "aec", VAL_BOOL, true, &hasError, 0);
 
-	int gainceiling = JSON_GET_INT(req_content, "gainceiling");
-	bool isValidGainceiling = false;
+	int hmirror = getAttrIntVal(req_content, res_content, "hmirror", VAL_BOOL, true, &hasError, 0);
 
-	if (gainceiling != JSON_INT_ATTR_NOTFOUND) {
-		if(gainceiling < MIN_GAINCEILING || gainceiling > MAX_GAINCEILING) {
-			char message[33];
-			sprintf(message, "Value should be between %d and %d", MIN_GAINCEILING, MAX_GAINCEILING);
-			cJSON_AddStringToObject(res_content, "gainceiling", message);
-			hasError = true;
-		}
-		isValidGainceiling = true;
-	}
+	int vflip = getAttrIntVal(req_content, res_content, "vflip", VAL_BOOL, true, &hasError, 0);
 
-	int colorbar = JSON_GET_INT(req_content, "colorbar");
-	bool isValidColorbar = false;
+	int awb_gain = getAttrIntVal(req_content, res_content, "awb_gain", VAL_BOOL, true, &hasError, 0);
 
-	if (colorbar != JSON_INT_ATTR_NOTFOUND) {
-		if(colorbar != JSON_ATTR_FALSE && colorbar != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "colorbar", message);
-			hasError = true;
-		}
-		isValidColorbar = true;
-	}
+	int agc_gain = getAttrIntVal(req_content, res_content, "agc_gain", VAL_BETWEEN, true, &hasError, 2, MIN_AGC_GAIN, MAX_AGC_GAIN);
 
-	int awb = JSON_GET_INT(req_content, "awb");
-	bool isValidAwb = false;
+	int aec_value = getAttrIntVal(req_content, res_content, "aec_value", VAL_BETWEEN, true, &hasError, 2, MIN_AEC_VALUE, MAX_AEC_VALUE);
 
-	if (awb != JSON_INT_ATTR_NOTFOUND) {
-		if(awb != JSON_ATTR_FALSE && awb != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "awb", message);
-			hasError = true;
-		}
-		isValidAwb = true;
-	}
+	int aec2 = getAttrIntVal(req_content, res_content, "aec2", VAL_BOOL, true, &hasError, 0);
 
-	int agc = JSON_GET_INT(req_content, "agc");
-	bool isValidAgc = false;
+	int dcw = getAttrIntVal(req_content, res_content, "dcw", VAL_BOOL, true, &hasError, 0);
 
-	if (agc != JSON_INT_ATTR_NOTFOUND) {
-		if(agc != JSON_ATTR_FALSE && agc != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "agc", message);
-			hasError = true;
-		}
-		isValidAgc = true;
-	}
+	int bpc = getAttrIntVal(req_content, res_content, "bpc", VAL_BOOL, true, &hasError, 0);
 
-	int aec = JSON_GET_INT(req_content, "aec");
-	bool isValidAec = false;
+	int wpc = getAttrIntVal(req_content, res_content, "wpc", VAL_BOOL, true, &hasError, 0);
 
-	if (aec != JSON_INT_ATTR_NOTFOUND) {
-		if(aec != JSON_ATTR_FALSE && aec != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "aec", message);
-			hasError = true;
-		}
-		isValidAec = true;
-	}
+	int raw_gma = getAttrIntVal(req_content, res_content, "raw_gma", VAL_BOOL, true, &hasError, 0);
 
-	int hmirror = JSON_GET_INT(req_content, "hmirror");
-	bool isValidHMirror = false;
+	int lenc = getAttrIntVal(req_content, res_content, "lenc", VAL_BOOL, true, &hasError, 0);
 
-	if (hmirror != JSON_INT_ATTR_NOTFOUND) {
-		if(hmirror != JSON_ATTR_FALSE && hmirror != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "hmirror", message);
-			hasError = true;
-		}
-		isValidHMirror = true;
-	}
+	int special_effect = getAttrIntVal(req_content, res_content, "special_effect", VAL_BETWEEN, true, &hasError, 2, MIN_SPECIAL_EFFECT, MAX_SPECIAL_EFFECT);
 
-	int vflip = JSON_GET_INT(req_content, "vflip");
-	bool isValidVFlip = false;
+	int wb_mode = getAttrIntVal(req_content, res_content, "wb_mode", VAL_BETWEEN, true, &hasError, 2, MIN_WB_MODE, MAX_WB_MODE);
 
-	if (vflip != JSON_INT_ATTR_NOTFOUND) {
-		if(vflip != JSON_ATTR_FALSE && vflip != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "vflip", message);
-			hasError = true;
-		}
-		isValidVFlip = true;
-	}
-
-	int awb_gain = JSON_GET_INT(req_content, "awb_gain");
-	bool isValidAwbGain = false;
-
-	if (awb_gain != JSON_INT_ATTR_NOTFOUND) {
-		if(awb_gain != JSON_ATTR_FALSE && awb_gain != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "awb_gain", message);
-			hasError = true;
-		}
-		isValidAwbGain = true;
-	}
-
-	int agc_gain = JSON_GET_INT(req_content, "agc_gain");
-	bool isValidAgcGain = false;
-
-	if (agc_gain != JSON_INT_ATTR_NOTFOUND) {
-		if(agc_gain < MIN_AGC_GAIN || agc_gain > MAX_AGC_GAIN) {
-			char message[33];
-			sprintf(message, "Value should be between %d and %d", MIN_AGC_GAIN, MAX_AGC_GAIN);
-			cJSON_AddStringToObject(res_content, "agc_gain", message);
-			hasError = true;
-		}
-		isValidAgcGain = true;
-	}
-
-	int aec_value = JSON_GET_INT(req_content, "aec_value");
-	bool isValidAecValue = false;
-
-	if (aec_value != JSON_INT_ATTR_NOTFOUND) {
-		if(aec_value < MIN_AEC_VALUE || aec_value > MAX_AEC_VALUE) {
-			char message[35];
-			sprintf(message, "Value should be between %d and %d", MIN_AEC_VALUE, MAX_AEC_VALUE);
-			cJSON_AddStringToObject(res_content, "aec_value", message);
-			hasError = true;
-		}
-		isValidAecValue = true;
-	}
-
-	int aec2 = JSON_GET_INT(req_content, "aec2");
-	bool isValidAec2 = false;
-
-	if (aec2 != JSON_INT_ATTR_NOTFOUND) {
-		if(aec2 != JSON_ATTR_FALSE && aec2 != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "aec2", message);
-			hasError = true;
-		}
-		isValidAec2 = true;
-	}
-
-	int dcw = JSON_GET_INT(req_content, "dcw");
-	bool isValidDcw = false;
-
-	if (dcw != JSON_INT_ATTR_NOTFOUND) {
-		if(dcw != JSON_ATTR_FALSE && dcw != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "dcw", message);
-			hasError = true;
-		}
-		isValidDcw = true;
-	}
-
-	int bpc = JSON_GET_INT(req_content, "bpc");
-	bool isValidBpc = false;
-
-	if (bpc != JSON_INT_ATTR_NOTFOUND) {
-		if(bpc != JSON_ATTR_FALSE && bpc != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "bpc", message);
-			hasError = true;
-		}
-		isValidBpc = true;
-	}
-
-	int wpc = JSON_GET_INT(req_content, "wpc");
-	bool isValidWpc = false;
-
-	if (wpc != JSON_INT_ATTR_NOTFOUND) {
-		if(wpc != JSON_ATTR_FALSE && wpc != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "wpc", message);
-			hasError = true;
-		}
-		isValidWpc = true;
-	}
-
-	int raw_gma = JSON_GET_INT(req_content, "raw_gma");
-	bool isValidRawGma = false;
-
-	if (raw_gma != JSON_INT_ATTR_NOTFOUND) {
-		if(raw_gma != JSON_ATTR_FALSE && raw_gma != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "raw_gma", message);
-			hasError = true;
-		}
-		isValidRawGma = true;
-	}
-
-	int lenc = JSON_GET_INT(req_content, "lenc");
-	bool isValidLenc = false;
-
-	if (lenc != JSON_INT_ATTR_NOTFOUND) {
-		if(lenc != JSON_ATTR_FALSE && lenc != JSON_ATTR_TRUE) {
-			char message[21];
-			sprintf(message, "Value must be %d or %d", JSON_ATTR_FALSE, JSON_ATTR_TRUE);
-			cJSON_AddStringToObject(res_content, "lenc", message);
-			hasError = true;
-		}
-		isValidLenc = true;
-	}
-
-	int special_effect = JSON_GET_INT(req_content, "special_effect");
-	bool isValidSpecialEffect = false;
-
-	if (special_effect != JSON_INT_ATTR_NOTFOUND) {
-		if(special_effect < MIN_SPECIAL_EFFECT || special_effect > MAX_SPECIAL_EFFECT) {
-			char message[33];
-			sprintf(message, "Value should be between %d and %d", MIN_SPECIAL_EFFECT, MAX_SPECIAL_EFFECT);
-			cJSON_AddStringToObject(res_content, "special_effect", message);
-			hasError = true;
-		}
-		isValidSpecialEffect = true;
-	}
-
-	int wb_mode = JSON_GET_INT(req_content, "wb_mode");
-	bool isValidWbMode = false;
-
-	if (wb_mode != JSON_INT_ATTR_NOTFOUND) {
-		if(wb_mode < MIN_WB_MODE || wb_mode > MAX_WB_MODE) {
-			char message[33];
-			sprintf(message, "Value should be between %d and %d", MIN_WB_MODE, MAX_WB_MODE);
-			cJSON_AddStringToObject(res_content, "wb_mode", message);
-			hasError = true;
-		}
-		isValidWbMode = true;
-	}
-
-	int ae_level = JSON_GET_INT(req_content, "ae_level");
-	bool isValidAeLevel = false;
-
-	if (ae_level != JSON_INT_ATTR_NOTFOUND) {
-		if(ae_level < MIN_AE_LEVEL || ae_level > MAX_AE_LEVEL) {
-			char message[33];
-			sprintf(message, "Value should be between %d and %d", MIN_AE_LEVEL, MAX_AE_LEVEL);
-			cJSON_AddStringToObject(res_content, "ae_level", message);
-			hasError = true;
-		}
-		isValidAeLevel = true;
-	}
+	int ae_level = getAttrIntVal(req_content, res_content, "ae_level", VAL_BETWEEN, true, &hasError, 2, MIN_AE_LEVEL, MAX_AE_LEVEL);
 
 	if(hasError) {
-		char *message = cJSON_Print(res_content);
-		httpd_resp_set_type(req, CONTENT_TYPE_APPLICATION_JSON);
-		httpd_resp_set_status(req, _400_BAD_REQUEST);
-		res = httpd_resp_sendstr(req, message);
-		free(message);
+		res = resp_send_json(req, res_content, _400_BAD_REQUEST);
 		APP_ERROR_CHECK(false, "", err_cmd);
 	}
 
 	//Resolution
-	if(isValidFramesize && !!sensor->set_framesize(sensor, (framesize_t)framesize)) {
-		cJSON_AddStringToObject(res_content, "framesize", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "framesize", &framesize, &hasError, sensor->set_framesize);
 
 	//Quality
-	if(isValidQuality && !!sensor->set_quality(sensor, quality)) {
-		cJSON_AddStringToObject(res_content, "quality", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "quality", &quality, &hasError, sensor->set_quality);
 
 	//Contrast
-	if(isValidContrast && !!sensor->set_contrast(sensor, contrast)) {
-		cJSON_AddStringToObject(res_content, "contrast", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "contrast", &contrast, &hasError, sensor->set_contrast);
 
 	//Brightness
-	if(isValidBrightness && !!sensor->set_brightness(sensor, brightness)) {
-		cJSON_AddStringToObject(res_content, "brightness", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "brightness", &brightness, &hasError, sensor->set_brightness);
 
 	//Saturation
-	if(isValidSaturation && !!sensor->set_saturation(sensor, saturation)) {
-		cJSON_AddStringToObject(res_content, "saturation", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "saturation", &saturation, &hasError, sensor->set_saturation);
 
 	//Gain Ceiling
-	if(isValidGainceiling && !!sensor->set_gainceiling(sensor, (gainceiling_t)gainceiling)) {
-		cJSON_AddStringToObject(res_content, "gainceiling", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "gainceiling", &gainceiling, &hasError, sensor->set_gainceiling);
 
 	//Color Bar
-	if(isValidColorbar && !!sensor->set_colorbar(sensor, colorbar)) {
-		cJSON_AddStringToObject(res_content, "colorbar", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "colorbar", &colorbar, &hasError, sensor->set_colorbar);
 
 	//AWB
-	if(isValidAwb && !!sensor->set_whitebal(sensor, awb)) {
-		cJSON_AddStringToObject(res_content, "awb", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "awb", &awb, &hasError, sensor->set_whitebal);
 
 	//AGC
-	if(isValidAgc && !!sensor->set_gain_ctrl(sensor, agc)) {
-		cJSON_AddStringToObject(res_content, "agc", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "agc", &agc, &hasError, sensor->set_gain_ctrl);
 
 	//AEC SENSOR
-	if(isValidAec && !!sensor->set_exposure_ctrl(sensor, aec)) {
-		cJSON_AddStringToObject(res_content, "aec", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "aec", &aec, &hasError, sensor->set_exposure_ctrl);
 
 	//H-Mirror
-	if(isValidHMirror && !!sensor->set_hmirror(sensor, hmirror)) {
-		cJSON_AddStringToObject(res_content, "hmirror", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "hmirror", &hmirror, &hasError, sensor->set_hmirror);
 
 	//V-Flip
-	if(isValidVFlip && !!sensor->set_vflip(sensor, vflip)) {
-		cJSON_AddStringToObject(res_content, "vflip", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "vflip", &vflip, &hasError, sensor->set_vflip);
 
 	//AWB Gain
-	if(isValidAwbGain && !!sensor->set_awb_gain(sensor, awb_gain)) {
-		cJSON_AddStringToObject(res_content, "awb_gain", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "awb_gain", &awb_gain, &hasError, sensor->set_awb_gain);
 
 	//Gain
-	if(isValidAgcGain && !!sensor->set_agc_gain(sensor, agc_gain)) {
-		cJSON_AddStringToObject(res_content, "agc_gain", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "agc_gain", &agc_gain, &hasError, sensor->set_agc_gain);
 
 	//Exposure
-	if(isValidAecValue && !!sensor->set_aec_value(sensor, aec_value)) {
-		cJSON_AddStringToObject(res_content, "aec_value", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "aec_value", &aec_value, &hasError, sensor->set_aec_value);
 
 	//AEC DSP
-	if(isValidAec2 && !!sensor->set_aec2(sensor, aec2)) {
-		cJSON_AddStringToObject(res_content, "aec2", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "aec2", &aec2, &hasError, sensor->set_aec2);
 
 	//DCW (Downsize EN)
-	if(isValidDcw && !!sensor->set_dcw(sensor, dcw)) {
-		cJSON_AddStringToObject(res_content, "dcw", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "dcw", &dcw, &hasError, sensor->set_dcw);
 
 	//BPC
-	if(isValidBpc && !!sensor->set_bpc(sensor, bpc)) {
-		cJSON_AddStringToObject(res_content, "bpc", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "bpc", &bpc, &hasError, sensor->set_bpc);
 
 	//WPC
-	if(isValidWpc && !!sensor->set_wpc(sensor, wpc)) {
-		cJSON_AddStringToObject(res_content, "wpc", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "wpc", &wpc, &hasError, sensor->set_wpc);
 
 	//Raw GMA
-	if(isValidRawGma && !!sensor->set_raw_gma(sensor, raw_gma)) {
-		cJSON_AddStringToObject(res_content, "raw_gma", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "raw_gma", &raw_gma, &hasError, sensor->set_raw_gma);
 
 	//Lens Correction
-	if(isValidLenc && !!sensor->set_lenc(sensor, lenc)) {
-		cJSON_AddStringToObject(res_content, "lenc", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "lenc", &lenc, &hasError, sensor->set_lenc);
 
 	//Special Effect
-	if(isValidSpecialEffect && !!sensor->set_special_effect(sensor, special_effect)) {
-		cJSON_AddStringToObject(res_content, "special_effect", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "special_effect", &special_effect, &hasError, sensor->set_special_effect);
 
 	//WB Mode
-	if(isValidWbMode && !!sensor->set_wb_mode(sensor, wb_mode)) {
-		cJSON_AddStringToObject(res_content, "wb_mode", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "wb_mode", &wb_mode, &hasError, sensor->set_wb_mode);
 
 	//AE Level
-	if(isValidAeLevel && !!sensor->set_ae_level(sensor, ae_level)) {
-		cJSON_AddStringToObject(res_content, "ae_level", "Something wrong");
-		hasError = true;
-	}
+	setSensorIntVal(sensor, res_content, "ae_level", &ae_level, &hasError, sensor->set_ae_level);
 
 	if(hasError) {
-		char *message = cJSON_Print(res_content);
-		httpd_resp_set_type(req, CONTENT_TYPE_APPLICATION_JSON);
-		httpd_resp_set_status(req, _500_INTERNAL_SERVER_ERROR);
-		res = httpd_resp_sendstr(req, message);
-		free(message);
+		res = resp_send_json(req, res_content, _500_INTERNAL_SERVER_ERROR);
 		APP_ERROR_CHECK(false, "", err_cmd);
 	}
 
