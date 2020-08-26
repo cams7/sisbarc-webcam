@@ -27,8 +27,11 @@ extern "C" {
 #define _400_BAD_REQUEST           "400"
 #define _500_INTERNAL_SERVER_ERROR "500"
 
-#define ERR_MSG_SOMETHING_WRONG "Something wrong"
-#define ERR_MSG_INVALID_CONTENT "Invalid content"
+#define HTTP_HEAD_ALLOW_ORIGIN "Access-Control-Allow-Origin"
+
+#define ERR_MSG_SOMETHING_WRONG              "Something wrong"
+#define ERR_MSG_INVALID_CONTENT              "Invalid content"
+#define ERR_MSG_REQ_JSON_DATA_LOADING_BUFFER "An error occurred while loading the buffer"
 
 #define APP_HTTPD_TAG "app_httpd"
 

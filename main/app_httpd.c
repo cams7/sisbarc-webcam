@@ -148,19 +148,35 @@ err_init:
 	return ESP_FAIL;
 }
 
-static void clear_get_json(cJSON *root, char *sys_info) {
-	if(!!sys_info) free(sys_info);
-	if(!!root) cJSON_Delete(root);
+static esp_err_t resp_send_json_data(httpd_req_t *req, cJSON *json_data, const char* httpStatus) {
+	esp_err_t resp;
+	char *data = cJSON_Print(json_data);
+	httpd_resp_set_hdr(req, HTTP_HEAD_ALLOW_ORIGIN, "*");
+	httpd_resp_set_type(req, CONTENT_TYPE_APPLICATION_JSON);
+	httpd_resp_set_status(req, httpStatus);
+	resp = httpd_resp_sendstr(req, data);
+	free(data);
+	return resp;
 }
 
-static esp_err_t send_json_error(httpd_req_t *req, cJSON *root, char *sys_info) {
-	clear_get_json(root, sys_info);
-	httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
-	httpd_resp_set_status(req, _500_INTERNAL_SERVER_ERROR);
-	return httpd_resp_sendstr(req, ERR_MSG_SOMETHING_WRONG);
+static esp_err_t resp_send_json_data_ok(httpd_req_t *req, cJSON *json_data) {
+	return resp_send_json_data(req, json_data, _200_OK);
 }
 
-static void get_chip_info(esp_chip_info_t *chip_info, cJSON *root) {
+static esp_err_t resp_send_json_message(httpd_req_t *req, const char* httpStatus, const char* message) {
+	cJSON *json_data = cJSON_CreateObject();
+	cJSON_AddStringToObject(json_data, "message", message);
+	esp_err_t resp = resp_send_json_data(req, json_data, httpStatus);
+	cJSON_Delete(json_data);
+	return resp;
+}
+
+static esp_err_t resp_send_json_invalid_content(httpd_req_t *req) {
+	esp_err_t resp = resp_send_json_message(req, _400_BAD_REQUEST, ERR_MSG_INVALID_CONTENT);
+	return resp;
+}
+
+static void get_chip_info(esp_chip_info_t *chip_info, cJSON *resp_json_data) {
     cJSON *chip = cJSON_CreateObject();
     cJSON_AddStringToObject(chip, "name", CHIP_NAME);
     cJSON_AddNumberToObject(chip, "cores", chip_info->cores);
@@ -179,10 +195,10 @@ static void get_chip_info(esp_chip_info_t *chip_info, cJSON *root) {
 
     cJSON_AddNumberToObject(chip, "revision", chip_info->revision);
 
-    cJSON_AddItemToObject(root, "chip", chip);
+    cJSON_AddItemToObject(resp_json_data, "chip", chip);
 }
 
-static void get_flash_info(esp_chip_info_t *chip_info, cJSON *root) {
+static void get_flash_info(esp_chip_info_t *chip_info, cJSON *resp_json_data) {
     cJSON *flash = cJSON_CreateObject();
 
     char flash_size[7];
@@ -191,76 +207,60 @@ static void get_flash_info(esp_chip_info_t *chip_info, cJSON *root) {
 
     cJSON_AddStringToObject(flash, "type", (chip_info->features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
 
-    cJSON_AddItemToObject(root, "flash", flash);
+    cJSON_AddItemToObject(resp_json_data, "flash", flash);
 }
 
 static esp_err_t system_info_handler(httpd_req_t *req) {
-	esp_err_t resp;
-	httpd_resp_set_type(req, CONTENT_TYPE_APPLICATION_JSON);
-	cJSON *root = cJSON_CreateObject();
 	esp_chip_info_t chip_info;
 	esp_chip_info(&chip_info);
 
-	get_chip_info(&chip_info, root);
-	get_flash_info(&chip_info, root);
+	cJSON *resp_json_data = cJSON_CreateObject();
+	get_chip_info(&chip_info, resp_json_data);
+	get_flash_info(&chip_info, resp_json_data);
 
-	char *sys_info = cJSON_Print(root);
-	APP_ERROR_CHECK_WITH_MSG((resp = httpd_resp_sendstr(req, sys_info)) == ESP_OK, ERR_MSG_SOMETHING_WRONG, err_info_with_resp);
+	esp_err_t resp = resp_send_json_data_ok(req, resp_json_data);
 
-	clear_get_json(root, sys_info);
-	root = NULL;
-	return resp;
-err_info_with_resp:
-	resp = send_json_error(req, root, sys_info);
+	cJSON_Delete(resp_json_data);
 	return resp;
 }
 
 static esp_err_t cam_status_handler(httpd_req_t *req) {
-	esp_err_t resp;
-	sensor_t *s = esp_camera_sensor_get();
+	sensor_t *sensor = esp_camera_sensor_get();
 
-	httpd_resp_set_type(req, CONTENT_TYPE_APPLICATION_JSON);
-	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+	cJSON *resp_json_data = cJSON_CreateObject();
 
-	cJSON *root = cJSON_CreateObject();
+	cJSON_AddStringToObject(resp_json_data, "board", CAM_BOARD);
+	cJSON_AddNumberToObject(resp_json_data, "xclk", sensor->xclk_freq_hz / 1000000);
+	cJSON_AddNumberToObject(resp_json_data, "pixformat", sensor->pixformat);
+	cJSON_AddNumberToObject(resp_json_data, "framesize", sensor->status.framesize);
+	cJSON_AddNumberToObject(resp_json_data, "quality", sensor->status.quality);
+	cJSON_AddNumberToObject(resp_json_data, "brightness", sensor->status.brightness);
+	cJSON_AddNumberToObject(resp_json_data, "contrast", sensor->status.contrast);
+	cJSON_AddNumberToObject(resp_json_data, "saturation", sensor->status.saturation);
+	cJSON_AddNumberToObject(resp_json_data, "sharpness", sensor->status.sharpness);
+	cJSON_AddNumberToObject(resp_json_data, "special_effect", sensor->status.special_effect);
+	cJSON_AddNumberToObject(resp_json_data, "wb_mode", sensor->status.wb_mode);
+	cJSON_AddNumberToObject(resp_json_data, "awb", sensor->status.awb);
+	cJSON_AddNumberToObject(resp_json_data, "awb_gain", sensor->status.awb_gain);
+	cJSON_AddNumberToObject(resp_json_data, "aec", sensor->status.aec);
+	cJSON_AddNumberToObject(resp_json_data, "aec2", sensor->status.aec2);
+	cJSON_AddNumberToObject(resp_json_data, "ae_level", sensor->status.ae_level);
+	cJSON_AddNumberToObject(resp_json_data, "aec_value", sensor->status.aec_value);
+	cJSON_AddNumberToObject(resp_json_data, "agc", sensor->status.agc);
+	cJSON_AddNumberToObject(resp_json_data, "agc_gain", sensor->status.agc_gain);
+	cJSON_AddNumberToObject(resp_json_data, "gainceiling", sensor->status.gainceiling);
+	cJSON_AddNumberToObject(resp_json_data, "bpc", sensor->status.bpc);
+	cJSON_AddNumberToObject(resp_json_data, "wpc", sensor->status.wpc);
+	cJSON_AddNumberToObject(resp_json_data, "raw_gma", sensor->status.raw_gma);
+	cJSON_AddNumberToObject(resp_json_data, "lenc", sensor->status.lenc);
+	cJSON_AddNumberToObject(resp_json_data, "hmirror", sensor->status.hmirror);
+	cJSON_AddNumberToObject(resp_json_data, "dcw", sensor->status.dcw);
+	cJSON_AddNumberToObject(resp_json_data, "colorbar", sensor->status.colorbar);
+	cJSON_AddNumberToObject(resp_json_data, "led_intensity", -1);
 
-	cJSON_AddStringToObject(root, "board", CAM_BOARD);
-	cJSON_AddNumberToObject(root, "xclk", s->xclk_freq_hz / 1000000);
-	cJSON_AddNumberToObject(root, "pixformat", s->pixformat);
-	cJSON_AddNumberToObject(root, "framesize", s->status.framesize);
-	cJSON_AddNumberToObject(root, "quality", s->status.quality);
-	cJSON_AddNumberToObject(root, "brightness", s->status.brightness);
-	cJSON_AddNumberToObject(root, "contrast", s->status.contrast);
-	cJSON_AddNumberToObject(root, "saturation", s->status.saturation);
-	cJSON_AddNumberToObject(root, "sharpness", s->status.sharpness);
-	cJSON_AddNumberToObject(root, "special_effect", s->status.special_effect);
-	cJSON_AddNumberToObject(root, "wb_mode", s->status.wb_mode);
-	cJSON_AddNumberToObject(root, "awb", s->status.awb);
-	cJSON_AddNumberToObject(root, "awb_gain", s->status.awb_gain);
-	cJSON_AddNumberToObject(root, "aec", s->status.aec);
-	cJSON_AddNumberToObject(root, "aec2", s->status.aec2);
-	cJSON_AddNumberToObject(root, "ae_level", s->status.ae_level);
-	cJSON_AddNumberToObject(root, "aec_value", s->status.aec_value);
-	cJSON_AddNumberToObject(root, "agc", s->status.agc);
-	cJSON_AddNumberToObject(root, "agc_gain", s->status.agc_gain);
-	cJSON_AddNumberToObject(root, "gainceiling", s->status.gainceiling);
-	cJSON_AddNumberToObject(root, "bpc", s->status.bpc);
-	cJSON_AddNumberToObject(root, "wpc", s->status.wpc);
-	cJSON_AddNumberToObject(root, "raw_gma", s->status.raw_gma);
-	cJSON_AddNumberToObject(root, "lenc", s->status.lenc);
-	cJSON_AddNumberToObject(root, "hmirror", s->status.hmirror);
-	cJSON_AddNumberToObject(root, "dcw", s->status.dcw);
-	cJSON_AddNumberToObject(root, "colorbar", s->status.colorbar);
-	cJSON_AddNumberToObject(root, "led_intensity", -1);
+	esp_err_t resp = resp_send_json_data_ok(req, resp_json_data);
 
-	char *sys_info = cJSON_Print(root);
-	APP_ERROR_CHECK_WITH_MSG((resp = httpd_resp_sendstr(req, sys_info)) == ESP_OK, ERR_MSG_SOMETHING_WRONG, err_status_with_resp);
-
-	clear_get_json(root, sys_info);
-	root = NULL;
-	return resp;
-err_status_with_resp:
-	resp = send_json_error(req, root, sys_info);
+	cJSON_Delete(resp_json_data);
 	return resp;
 }
 
@@ -278,7 +278,7 @@ static esp_err_t cam_stream_handler(httpd_req_t *req) {
 
 	APP_ERROR_CHECK_WITH_MSG(httpd_resp_set_type(req, _STREAM_CONTENT_TYPE) == ESP_OK, "Stream content type invalid", err_stream_with_resp);
 
-	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+	httpd_resp_set_hdr(req, HTTP_HEAD_ALLOW_ORIGIN, "*");
 	httpd_resp_set_hdr(req, "X-Framerate", "60");
 
 	while (true) {
@@ -326,11 +326,9 @@ static esp_err_t cam_stream_handler(httpd_req_t *req) {
 	resp = ESP_OK;
 	return resp;
 err_stream_with_resp:
-	httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
-	httpd_resp_set_status(req, _500_INTERNAL_SERVER_ERROR);
-	resp = httpd_resp_sendstr(req, ERR_MSG_SOMETHING_WRONG);
+	resp = resp_send_json_message(req, _500_INTERNAL_SERVER_ERROR, ERR_MSG_SOMETHING_WRONG);
 err_stream:
-	if (!!_jpg_buf) free(_jpg_buf);
+	if (!!fb) esp_camera_fb_return(fb);
 	return resp;
 }
 
@@ -356,7 +354,7 @@ static esp_err_t cam_capture_handler(httpd_req_t *req) {
 
 	httpd_resp_set_type(req, CONTENT_TYPE_IMAGE_JPEG);
 	httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
-	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+	httpd_resp_set_hdr(req, HTTP_HEAD_ALLOW_ORIGIN, "*");
 
 	char ts[32];
 	snprintf(ts, 32, "%ld.%06ld", fb->timestamp.tv_sec, fb->timestamp.tv_usec);
@@ -373,16 +371,16 @@ static esp_err_t cam_capture_handler(httpd_req_t *req) {
 		fb_len = jchunk.len;
 	}
 	esp_camera_fb_return(fb);
+	fb = NULL;
 
 	int64_t fr_end = esp_timer_get_time();
 	ESP_LOGI(APP_HTTPD_TAG, "JPG: %uB %ums", (uint32_t)(fb_len), (uint32_t)((fr_end - fr_start) / 1000));
 
 	return resp;
 err_capture_with_resp:
-	httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
-	httpd_resp_set_status(req, _500_INTERNAL_SERVER_ERROR);
-	resp = httpd_resp_sendstr(req, ERR_MSG_SOMETHING_WRONG);
+	resp = resp_send_json_message(req, _500_INTERNAL_SERVER_ERROR, ERR_MSG_SOMETHING_WRONG);
 err_capture:
+	if (!!fb) esp_camera_fb_return(fb);
 	return resp;
 }
 
@@ -489,42 +487,13 @@ static void setSensorIntVal(sensor_t *sensor, cJSON *resp_json_err, cJSON *resp_
 	}
 }
 
-static esp_err_t resp_send_json_data(httpd_req_t *req, cJSON *json_data, const char* httpStatus) {
-	esp_err_t resp;
-	char *data = cJSON_Print(json_data);
-	httpd_resp_set_type(req, CONTENT_TYPE_APPLICATION_JSON);
-	httpd_resp_set_status(req, httpStatus);
-	resp = httpd_resp_sendstr(req, data);
-	free(data);
-	return resp;
-}
-
-static esp_err_t resp_send_json_data_ok(httpd_req_t *req, cJSON *json_data) {
-	return resp_send_json_data(req, json_data, _200_OK);
-}
-
-static esp_err_t resp_send_json_message(httpd_req_t *req, const char* httpStatus, const char* message) {
-	cJSON *json_data = cJSON_CreateObject();
-	cJSON_AddStringToObject(json_data, "message", message);
-	esp_err_t resp = resp_send_json_data(req, json_data, httpStatus);
-	cJSON_Delete(json_data);
-	return resp;
-}
-
-static esp_err_t resp_send_json_invalid_content(httpd_req_t *req) {
-	esp_err_t resp = resp_send_json_message(req, _400_BAD_REQUEST, ERR_MSG_INVALID_CONTENT);
-	return resp;
-}
-
 static esp_err_t cam_cmd_handler(httpd_req_t *req) {
 	esp_err_t resp;
 	cJSON *resp_json_err = NULL;
 	cJSON *resp_json_data = NULL;
 	char *buf;
 
-	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-
-	APP_ERROR_CHECK_WITH_MSG(!!(buf = getBuffer(req, &resp)), "An error occurred while loading the buffer", err_cmd);
+	APP_ERROR_CHECK_WITH_MSG(!!(buf = getBuffer(req, &resp)), ERR_MSG_REQ_JSON_DATA_LOADING_BUFFER, err_cmd);
 
 	cJSON *req_json_data = cJSON_Parse(buf);
 	sensor_t *sensor = esp_camera_sensor_get();
@@ -688,9 +657,7 @@ static esp_err_t cam_xclk_handler(httpd_req_t *req) {
 	cJSON *resp_json_data = NULL;
 	char *buf;
 
-	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-
-	APP_ERROR_CHECK_WITH_MSG(!!(buf = getBuffer(req, &resp)), "An error occurred while loading the buffer", err_xclk);
+	APP_ERROR_CHECK_WITH_MSG(!!(buf = getBuffer(req, &resp)), ERR_MSG_REQ_JSON_DATA_LOADING_BUFFER, err_xclk);
 
 	cJSON *req_json_data = cJSON_Parse(buf);
 
@@ -742,9 +709,7 @@ static esp_err_t cam_reg_handler(httpd_req_t *req) {
 	cJSON *resp_json_data = NULL;
 	char *buf;
 
-	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-
-	APP_ERROR_CHECK_WITH_MSG(!!(buf = getBuffer(req, &resp)), "An error occurred while loading the buffer", err_reg);
+	APP_ERROR_CHECK_WITH_MSG(!!(buf = getBuffer(req, &resp)), ERR_MSG_REQ_JSON_DATA_LOADING_BUFFER, err_reg);
 
 	cJSON *req_json_data = cJSON_Parse(buf);
 
@@ -788,9 +753,7 @@ static esp_err_t cam_greg_handler(httpd_req_t *req) {
 	cJSON *resp_json_data = NULL;
 	char *buf;
 
-	httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-
-	APP_ERROR_CHECK_WITH_MSG(!!(buf = getBuffer(req, &resp)), "An error occurred while loading the buffer", err_greg);
+	APP_ERROR_CHECK_WITH_MSG(!!(buf = getBuffer(req, &resp)), ERR_MSG_REQ_JSON_DATA_LOADING_BUFFER, err_greg);
 
 	cJSON *req_json_data = cJSON_Parse(buf);
 
