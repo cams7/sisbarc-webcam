@@ -61,6 +61,9 @@ extern "C" {
 #define MIN_XCLK_MHZ 1 //XCLK MHz
 #define MAX_XCLK_MHZ 20
 
+#define MIN_RESOLUTION_START_X 0 //Start X
+#define MAX_RESOLUTION_START_X 2
+
 #define APP_CAMERA_TAG "app_camera"
 
 esp_err_t init_camera(void);

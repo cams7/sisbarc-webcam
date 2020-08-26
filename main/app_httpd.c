@@ -46,6 +46,8 @@ static esp_err_t cam_cmd_handler(httpd_req_t *req);
 static esp_err_t cam_xclk_handler(httpd_req_t *req);
 static esp_err_t cam_reg_handler(httpd_req_t *req);
 static esp_err_t cam_greg_handler(httpd_req_t *req);
+static esp_err_t cam_pll_handler(httpd_req_t *req);
+static esp_err_t cam_win_handler(httpd_req_t *req);
 
 typedef struct {
     httpd_req_t *req;
@@ -120,6 +122,20 @@ esp_err_t init_server(void) {
 		.user_ctx = rest_context
 	};
 
+	httpd_uri_t cam_pll_uri = {
+		.uri = "/api/v1/cam/pll",
+		.method = HTTP_POST,
+		.handler = cam_pll_handler,
+		.user_ctx = rest_context
+	};
+
+	httpd_uri_t cam_win_uri = {
+		.uri = "/api/v1/cam/resolution",
+		.method = HTTP_POST,
+		.handler = cam_win_handler,
+		.user_ctx = rest_context
+	};
+
 	httpd_register_uri_handler(camera_httpd, &system_info_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_status_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_capture_uri);
@@ -127,6 +143,8 @@ esp_err_t init_server(void) {
 	httpd_register_uri_handler(camera_httpd, &cam_xclk_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_reg_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_greg_uri);
+	httpd_register_uri_handler(camera_httpd, &cam_pll_uri);
+	httpd_register_uri_handler(camera_httpd, &cam_win_uri);
 
 	config.server_port += 1;
 	config.ctrl_port += 1;
@@ -389,10 +407,7 @@ static char* getBuffer(httpd_req_t *req, esp_err_t *resp) {
 	int total_len = req->content_len;
 
 	if (total_len >= SCRATCH_BUFSIZE) {
-		/* Respond with 500 Internal Server Error */
-		httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
-		httpd_resp_set_status(req, _400_BAD_REQUEST);
-		*resp = httpd_resp_sendstr(req, "Content too long");
+		*resp = resp_send_json_message(req, _400_BAD_REQUEST, "Content too long");
 		APP_ERROR(err_set_buffer);
 	}
 
@@ -404,10 +419,7 @@ static char* getBuffer(httpd_req_t *req, esp_err_t *resp) {
 	while (cur_len < total_len) {
 		received = httpd_req_recv(req, buffer + cur_len, total_len);
 		if (received <= 0) {
-			/* Respond with 500 Internal Server Error */
-			httpd_resp_set_type(req, CONTENT_TYPE_TEXT_PLAIN);
-			httpd_resp_set_status(req, _400_BAD_REQUEST);
-			*resp = httpd_resp_sendstr(req, "Failed to post control value");
+			*resp = resp_send_json_message(req, _500_INTERNAL_SERVER_ERROR, "Failed to post control value");
 			APP_ERROR(err_set_buffer);
 		}
 		cur_len += received;
@@ -502,51 +514,28 @@ static esp_err_t cam_cmd_handler(httpd_req_t *req) {
 	resp_json_err = cJSON_CreateObject();
 
 	int framesize = getAttrIntVal(req_json_data, resp_json_err, "framesize", VAL_BETWEEN, sensor->pixformat == PIXFORMAT_JPEG, &hasError, 2, MIN_FRAMESIZE, MAX_FRAMESIZE);
-
 	int quality = getAttrIntVal(req_json_data, resp_json_err, "quality", VAL_BETWEEN, true, &hasError, 2, MIN_QUALITY, MAX_QUALITY);
-
 	int contrast = getAttrIntVal(req_json_data, resp_json_err, "contrast", VAL_BETWEEN, true, &hasError, 2, MIN_CONTRAST, MAX_CONTRAST);
-
 	int brightness = getAttrIntVal(req_json_data, resp_json_err, "brightness", VAL_BETWEEN, true, &hasError, 2, MIN_BRIGHTNESS, MAX_BRIGHTNESS);
-
 	int saturation = getAttrIntVal(req_json_data, resp_json_err, "saturation", VAL_BETWEEN, true, &hasError, 2, MIN_SATURATION, MAX_SATURATION);
-
 	int gainceiling = getAttrIntVal(req_json_data, resp_json_err, "gainceiling", VAL_BETWEEN, true, &hasError, 2, MIN_GAINCEILING, MAX_GAINCEILING);
-
 	int colorbar = getAttrIntVal(req_json_data, resp_json_err, "colorbar", VAL_BOOL, true, &hasError, 0);
-
 	int awb = getAttrIntVal(req_json_data, resp_json_err, "awb", VAL_BOOL, true, &hasError, 0);
-
 	int agc = getAttrIntVal(req_json_data, resp_json_err, "agc", VAL_BOOL, true, &hasError, 0);
-
 	int aec = getAttrIntVal(req_json_data, resp_json_err, "aec", VAL_BOOL, true, &hasError, 0);
-
 	int hmirror = getAttrIntVal(req_json_data, resp_json_err, "hmirror", VAL_BOOL, true, &hasError, 0);
-
 	int vflip = getAttrIntVal(req_json_data, resp_json_err, "vflip", VAL_BOOL, true, &hasError, 0);
-
 	int awb_gain = getAttrIntVal(req_json_data, resp_json_err, "awb_gain", VAL_BOOL, true, &hasError, 0);
-
 	int agc_gain = getAttrIntVal(req_json_data, resp_json_err, "agc_gain", VAL_BETWEEN, true, &hasError, 2, MIN_AGC_GAIN, MAX_AGC_GAIN);
-
 	int aec_value = getAttrIntVal(req_json_data, resp_json_err, "aec_value", VAL_BETWEEN, true, &hasError, 2, MIN_AEC_VALUE, MAX_AEC_VALUE);
-
 	int aec2 = getAttrIntVal(req_json_data, resp_json_err, "aec2", VAL_BOOL, true, &hasError, 0);
-
 	int dcw = getAttrIntVal(req_json_data, resp_json_err, "dcw", VAL_BOOL, true, &hasError, 0);
-
 	int bpc = getAttrIntVal(req_json_data, resp_json_err, "bpc", VAL_BOOL, true, &hasError, 0);
-
 	int wpc = getAttrIntVal(req_json_data, resp_json_err, "wpc", VAL_BOOL, true, &hasError, 0);
-
 	int raw_gma = getAttrIntVal(req_json_data, resp_json_err, "raw_gma", VAL_BOOL, true, &hasError, 0);
-
 	int lenc = getAttrIntVal(req_json_data, resp_json_err, "lenc", VAL_BOOL, true, &hasError, 0);
-
 	int special_effect = getAttrIntVal(req_json_data, resp_json_err, "special_effect", VAL_BETWEEN, true, &hasError, 2, MIN_SPECIAL_EFFECT, MAX_SPECIAL_EFFECT);
-
 	int wb_mode = getAttrIntVal(req_json_data, resp_json_err, "wb_mode", VAL_BETWEEN, true, &hasError, 2, MIN_WB_MODE, MAX_WB_MODE);
-
 	int ae_level = getAttrIntVal(req_json_data, resp_json_err, "ae_level", VAL_BETWEEN, true, &hasError, 2, MIN_AE_LEVEL, MAX_AE_LEVEL);
 
 	cJSON_Delete(req_json_data);
@@ -561,73 +550,50 @@ static esp_err_t cam_cmd_handler(httpd_req_t *req) {
 
 	//Resolution
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "framesize", &framesize, &hasError, sensor->set_framesize);
-
 	//Quality
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "quality", &quality, &hasError, sensor->set_quality);
-
 	//Contrast
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "contrast", &contrast, &hasError, sensor->set_contrast);
-
 	//Brightness
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "brightness", &brightness, &hasError, sensor->set_brightness);
-
 	//Saturation
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "saturation", &saturation, &hasError, sensor->set_saturation);
-
 	//Gain Ceiling
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "gainceiling", &gainceiling, &hasError, sensor->set_gainceiling);
-
 	//Color Bar
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "colorbar", &colorbar, &hasError, sensor->set_colorbar);
-
 	//AWB
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "awb", &awb, &hasError, sensor->set_whitebal);
-
 	//AGC
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "agc", &agc, &hasError, sensor->set_gain_ctrl);
-
 	//AEC SENSOR
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "aec", &aec, &hasError, sensor->set_exposure_ctrl);
-
 	//H-Mirror
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "hmirror", &hmirror, &hasError, sensor->set_hmirror);
-
 	//V-Flip
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "vflip", &vflip, &hasError, sensor->set_vflip);
-
 	//AWB Gain
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "awb_gain", &awb_gain, &hasError, sensor->set_awb_gain);
-
 	//Gain
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "agc_gain", &agc_gain, &hasError, sensor->set_agc_gain);
-
 	//Exposure
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "aec_value", &aec_value, &hasError, sensor->set_aec_value);
-
 	//AEC DSP
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "aec2", &aec2, &hasError, sensor->set_aec2);
-
 	//DCW (Downsize EN)
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "dcw", &dcw, &hasError, sensor->set_dcw);
-
 	//BPC
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "bpc", &bpc, &hasError, sensor->set_bpc);
-
 	//WPC
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "wpc", &wpc, &hasError, sensor->set_wpc);
-
 	//Raw GMA
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "raw_gma", &raw_gma, &hasError, sensor->set_raw_gma);
-
 	//Lens Correction
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "lenc", &lenc, &hasError, sensor->set_lenc);
-
 	//Special Effect
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "special_effect", &special_effect, &hasError, sensor->set_special_effect);
-
 	//WB Mode
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "wb_mode", &wb_mode, &hasError, sensor->set_wb_mode);
-
 	//AE Level
 	setSensorIntVal(sensor, resp_json_err, resp_json_data, "ae_level", &ae_level, &hasError, sensor->set_ae_level);
 
@@ -788,6 +754,133 @@ static esp_err_t cam_greg_handler(httpd_req_t *req) {
 
 	return resp;
 err_greg:
+	if(!!resp_json_data) cJSON_Delete(resp_json_data);
+	return resp;
+}
+
+static int getAttrIntValOrZero(cJSON *req_json_data, const char* attr) {
+	int val = JSON_GET_INT(req_json_data, attr);
+	if(val == JSON_INT_ATTR_NOTFOUND)
+		val = 0;
+	return val;
+}
+
+static esp_err_t cam_pll_handler(httpd_req_t *req) {
+	esp_err_t resp;
+	cJSON *resp_json_data = NULL;
+	char *buf;
+
+	APP_ERROR_CHECK_WITH_MSG(!!(buf = getBuffer(req, &resp)), ERR_MSG_REQ_JSON_DATA_LOADING_BUFFER, err_pll);
+
+	cJSON *req_json_data = cJSON_Parse(buf);
+
+	int bypass = getAttrIntValOrZero(req_json_data, "bypass");
+	int mul = getAttrIntValOrZero(req_json_data, "mul");
+	int sys = getAttrIntValOrZero(req_json_data, "sys");
+	int root = getAttrIntValOrZero(req_json_data, "root");
+	int pre = getAttrIntValOrZero(req_json_data, "pre");
+	int seld5 = getAttrIntValOrZero(req_json_data, "seld5");
+	int pclken = getAttrIntValOrZero(req_json_data, "pclken");
+	int pclk = getAttrIntValOrZero(req_json_data, "pclk");
+
+	cJSON_Delete(req_json_data);
+	req_json_data = NULL;
+
+	resp_json_data = cJSON_CreateObject();
+	sensor_t *sensor = esp_camera_sensor_get();
+
+	if (!sensor->set_pll(sensor, bypass, mul, sys, root, pre, seld5, pclken, pclk)) {
+		cJSON_AddNumberToObject(resp_json_data, "bypass", bypass);
+		cJSON_AddNumberToObject(resp_json_data, "mul", mul);
+		cJSON_AddNumberToObject(resp_json_data, "sys", sys);
+		cJSON_AddNumberToObject(resp_json_data, "root", root);
+		cJSON_AddNumberToObject(resp_json_data, "pre", pre);
+		cJSON_AddNumberToObject(resp_json_data, "seld5", seld5);
+		cJSON_AddNumberToObject(resp_json_data, "pclken", pclken);
+		cJSON_AddNumberToObject(resp_json_data, "pclk", pclk);
+	} else {
+		resp = resp_send_json_message(req, _500_INTERNAL_SERVER_ERROR, ERR_MSG_SOMETHING_WRONG);
+		APP_ERROR(err_pll);
+	}
+
+	resp = resp_send_json_data_ok(req, resp_json_data);
+
+	cJSON_Delete(resp_json_data);
+	resp_json_data = NULL;
+
+	return resp;
+err_pll:
+	if(!!resp_json_data) cJSON_Delete(resp_json_data);
+	return resp;
+}
+
+static esp_err_t cam_win_handler(httpd_req_t *req) {
+	esp_err_t resp;
+	cJSON *resp_json_err = NULL;
+	cJSON *resp_json_data = NULL;
+	char *buf;
+
+	APP_ERROR_CHECK_WITH_MSG(!!(buf = getBuffer(req, &resp)), ERR_MSG_REQ_JSON_DATA_LOADING_BUFFER, err_win);
+
+	cJSON *req_json_data = cJSON_Parse(buf);
+
+	bool hasError = false;
+	resp_json_err = cJSON_CreateObject();
+
+	int startX = getAttrIntVal(req_json_data, resp_json_err, "sx", VAL_BETWEEN, true, &hasError, 2, MIN_RESOLUTION_START_X, MAX_RESOLUTION_START_X);
+	int startY = getAttrIntValOrZero(req_json_data, "sy");
+	int endX = getAttrIntValOrZero(req_json_data, "ex");
+	int endY = getAttrIntValOrZero(req_json_data, "ey");
+	int offsetX = getAttrIntValOrZero(req_json_data, "offx");
+	int offsetY = getAttrIntValOrZero(req_json_data, "offy");
+	int totalX = getAttrIntValOrZero(req_json_data, "tx");
+	int totalY = getAttrIntValOrZero(req_json_data, "ty");
+	int outputX = getAttrIntValOrZero(req_json_data, "ox");
+	int outputY = getAttrIntValOrZero(req_json_data, "oy");
+	int scale = getAttrIntVal(req_json_data, resp_json_err, "scale", VAL_BOOL, true, &hasError, 0);
+	int binning = getAttrIntVal(req_json_data, resp_json_err, "binning", VAL_BOOL, true, &hasError, 0);
+
+	cJSON_Delete(req_json_data);
+	req_json_data = NULL;
+
+	if(hasError) {
+		resp = resp_send_json_data(req, resp_json_err, _400_BAD_REQUEST);
+		APP_ERROR(err_win);
+	}
+
+	cJSON_Delete(resp_json_err);
+	resp_json_err = NULL;
+
+	resp_json_data = cJSON_CreateObject();
+	sensor_t *s = esp_camera_sensor_get();
+
+	if (!s->set_res_raw(s, startX, startY, endX, endY, offsetX, offsetY, totalX, totalY, outputX, outputY, scale, binning)) {
+		cJSON_AddNumberToObject(resp_json_data, "sx", startX);
+		cJSON_AddNumberToObject(resp_json_data, "sy", startY);
+		cJSON_AddNumberToObject(resp_json_data, "ex", endX);
+		cJSON_AddNumberToObject(resp_json_data, "ey", endY);
+		cJSON_AddNumberToObject(resp_json_data, "offx", offsetX);
+		cJSON_AddNumberToObject(resp_json_data, "offy", offsetY);
+		cJSON_AddNumberToObject(resp_json_data, "tx", totalX);
+		cJSON_AddNumberToObject(resp_json_data, "ty", totalY);
+		cJSON_AddNumberToObject(resp_json_data, "ox", outputX);
+		cJSON_AddNumberToObject(resp_json_data, "oy", outputY);
+		cJSON_AddNumberToObject(resp_json_data, "scale", scale);
+		cJSON_AddNumberToObject(resp_json_data, "binning", binning);
+	} else {
+		resp = resp_send_json_message(req, _500_INTERNAL_SERVER_ERROR, ERR_MSG_SOMETHING_WRONG);
+		APP_ERROR(err_win);
+	}
+
+	resp = resp_send_json_data_ok(req, resp_json_data);
+
+	cJSON_Delete(resp_json_data);
+	resp_json_data = NULL;
+
+	return resp;
+
+err_win:
+	if(!!resp_json_err) cJSON_Delete(resp_json_err);
 	if(!!resp_json_data) cJSON_Delete(resp_json_data);
 	return resp;
 }
