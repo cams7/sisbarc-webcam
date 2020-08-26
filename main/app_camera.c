@@ -40,7 +40,7 @@ esp_err_t init_camera(void) {
     config.fb_count = 2;
 
     // camera init
-    APP_ERROR_CHECK(esp_camera_init(&config) == ESP_OK, "Camera init failed with error", err_init);
+    APP_ERROR_CHECK_WITH_MSG(esp_camera_init(&config) == ESP_OK, "Camera init failed with error", err_init);
 
     sensor_t * s = esp_camera_sensor_get();
     s->set_vflip(s, 1);//flip it back

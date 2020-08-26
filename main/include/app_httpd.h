@@ -23,8 +23,12 @@ extern "C" {
 #define CONTENT_TYPE_IMAGE_JPEG  "image/jpeg"
 #define CONTENT_TYPE_IMAGE_XICON "image/x-icon"
 
+#define _200_OK                    "200"
 #define _400_BAD_REQUEST           "400"
 #define _500_INTERNAL_SERVER_ERROR "500"
+
+#define ERR_MSG_SOMETHING_WRONG "Something wrong"
+#define ERR_MSG_INVALID_CONTENT "Invalid content"
 
 #define APP_HTTPD_TAG "app_httpd"
 
