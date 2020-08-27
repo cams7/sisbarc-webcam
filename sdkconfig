@@ -121,6 +121,8 @@ CONFIG_PARTITION_TABLE_MD5=y
 #
 # SISBARC-WEBCAM Configuration
 #
+CONFIG_CAM_HOST_NAME="esp32-cam1"
+# end of SISBARC-WEBCAM Configuration
 
 #
 # SISBARC-COMMON Configuration

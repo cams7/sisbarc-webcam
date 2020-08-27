@@ -121,13 +121,15 @@ CONFIG_PARTITION_TABLE_MD5=y
 #
 # SISBARC-WEBCAM Configuration
 #
+CONFIG_CAM_HOST_NAME=""
+# end of SISBARC-WEBCAM Configuration
 
 #
 # SISBARC-COMMON Configuration
 #
 CONFIG_APP_WIFI_SSID="Magalhaes"
 CONFIG_APP_WIFI_PASSWORD="C@tarin@"
-# CONFIG_APP_CONNECT_IPV6 is not set
+CONFIG_APP_CONNECT_IPV6=y
 # end of SISBARC-COMMON Configuration
 
 #

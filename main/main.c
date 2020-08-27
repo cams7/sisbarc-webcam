@@ -7,8 +7,9 @@
 #include "driver/gpio.h"
 
 #include "app_connect.h"
-#include "app_httpd.h"
 #include "app_camera.h"
+#include "app_httpd.h"
+#include "app_mdns.h"
 
 #define SISBARC_WEBCAM_TAG "sisbarc-webcam"
 
@@ -20,6 +21,7 @@ void app_main(void) {
 	ESP_ERROR_CHECK(init_camera());
     ESP_ERROR_CHECK(app_connect());
     ESP_ERROR_CHECK(init_server());
+    ESP_ERROR_CHECK(app_mdns_main());
 
     gpio_set_direction(GPIO_NUM_2, GPIO_MODE_OUTPUT);
     int level = 0;

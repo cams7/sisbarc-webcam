@@ -1,3 +1,8 @@
 # put here your custom config value
 menu "SISBARC-WEBCAM Configuration"
+	config CAM_HOST_NAME
+        string "Camera Host Name"
+        default ""
+        help
+            Hostname that the camera will advertise over mDNS.
 endmenu
