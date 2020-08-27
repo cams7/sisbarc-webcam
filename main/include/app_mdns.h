@@ -13,10 +13,11 @@ extern "C" {
 
 #include <string.h>
 #include "esp_err.h"
+#include "cJSON.h"
 
 #define APP_MDNS_TAG "app_mdns"
 
-char* app_mdns_query(size_t* out_len);
+void app_mdns_query(cJSON* resp_json_data);
 
 esp_err_t app_mdns_update_framesize(const int size);
 

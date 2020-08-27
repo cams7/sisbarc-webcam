@@ -19,6 +19,7 @@
 #include "app_httpd_common.h"
 #include "app_camera.h"
 #include "app_httpd.h"
+#include "app_mdns.h"
 
 #pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
 
@@ -42,6 +43,7 @@ static esp_err_t cam_reg_handler(httpd_req_t *req);
 static esp_err_t cam_greg_handler(httpd_req_t *req);
 static esp_err_t cam_pll_handler(httpd_req_t *req);
 static esp_err_t cam_win_handler(httpd_req_t *req);
+static esp_err_t mdns_handler(httpd_req_t *req);
 
 typedef struct {
     httpd_req_t *req;
@@ -125,6 +127,13 @@ esp_err_t init_server(void) {
 		.user_ctx = rest_context
 	};
 
+	httpd_uri_t mdns_uri = {
+		.uri = "/api/v1/mdns",
+		.method = HTTP_GET,
+		.handler = mdns_handler,
+		.user_ctx = NULL
+	};
+
 	httpd_register_uri_handler(camera_httpd, &system_info_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_status_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_capture_uri);
@@ -134,6 +143,7 @@ esp_err_t init_server(void) {
 	httpd_register_uri_handler(camera_httpd, &cam_greg_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_pll_uri);
 	httpd_register_uri_handler(camera_httpd, &cam_win_uri);
+	httpd_register_uri_handler(camera_httpd, &mdns_uri);
 
 	config.server_port += 1;
 	config.ctrl_port += 1;
@@ -757,5 +767,13 @@ static esp_err_t cam_win_handler(httpd_req_t *req) {
 err_win:
 	if(!!resp_json_err) cJSON_Delete(resp_json_err);
 	if(!!resp_json_data) cJSON_Delete(resp_json_data);
+	return resp;
+}
+
+static esp_err_t mdns_handler(httpd_req_t *req) {
+	cJSON* items = cJSON_CreateArray();
+	app_mdns_query(items);
+	esp_err_t resp = resp_send_json_data_ok(req, items);
+	cJSON_Delete(items);
 	return resp;
 }

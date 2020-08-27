@@ -30,8 +30,82 @@ static char pixformat[4];
 
 static mdns_result_t * found_cams = NULL;
 
-char* app_mdns_query(size_t * out_len) {
-	return "";
+void app_mdns_query(cJSON* resp_json_data) {
+	cJSON* item = cJSON_CreateObject();
+	cJSON_AddStringToObject(item, "instance", iname);
+	cJSON_AddStringToObject(item, "host", hname);
+	cJSON_AddNumberToObject(item, "port", 80);
+
+	cJSON *txt = cJSON_CreateObject();
+	cJSON_AddStringToObject(txt, "pixformat", pixformat);
+	cJSON_AddStringToObject(txt, "framesize", framesize);
+	cJSON_AddNumberToObject(txt, "stream_port", 81);
+	cJSON_AddStringToObject(txt, "board", CAM_BOARD);
+	cJSON_AddStringToObject(txt, "model", model);
+
+	cJSON_AddItemToObject(item, "txt", txt);
+
+	//add own data first
+	tcpip_adapter_ip_info_t ip;
+	if (strlen(CONFIG_APP_WIFI_SSID)) {
+		tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &ip);
+	} else {
+		tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_AP, &ip);
+	}
+
+	char formatted_ip[16];
+	sprintf(formatted_ip, IPSTR, IP2STR(&(ip.ip)));
+
+	cJSON_AddStringToObject(item, "ip", formatted_ip);
+
+	char id[22];
+	sprintf(id, "%s:%u", formatted_ip, 80);
+
+	cJSON_AddStringToObject(item, "id", id);
+
+	cJSON_AddStringToObject(item, "service", service_name);
+	cJSON_AddStringToObject(item, "proto", proto);
+
+	cJSON_AddItemToArray(resp_json_data, item);
+
+	xSemaphoreTake(query_lock, portMAX_DELAY);
+	if (!!found_cams) {
+		mdns_result_t* result = found_cams;
+		mdns_ip_addr_t* addr = NULL;
+		int i;
+		while(!!result) {
+			item = cJSON_CreateObject();
+			if(!!result->instance_name)
+				cJSON_AddStringToObject(item, "instance", result->instance_name);
+			if(!!result->hostname) {
+				cJSON_AddStringToObject(item, "host", result->hostname);
+				cJSON_AddNumberToObject(item, "port", result->port);
+			}
+			if(!!result->txt_count) {
+				txt = cJSON_CreateObject();
+				for(i=0; i < result->txt_count; i++)
+					cJSON_AddStringToObject(txt, result->txt[i].key, result->txt[i].value ? result->txt[i].value : "NULL");
+
+				cJSON_AddItemToObject(item, "txt", txt);
+			}
+			addr = result->addr;
+			while(!!addr) {
+				if(addr->addr.type != IPADDR_TYPE_V6){
+					sprintf(formatted_ip, IPSTR, IP2STR(&(addr->addr.u_addr.ip4)));
+					cJSON_AddStringToObject(item, "ip", formatted_ip);
+					sprintf(id, "%s:%u", formatted_ip, result->port);
+					cJSON_AddStringToObject(item, "id", id);
+					break;
+				}
+				addr = addr->next;
+			}
+			cJSON_AddStringToObject(item, "service", service_name);
+			cJSON_AddStringToObject(item, "proto", proto);
+			cJSON_AddItemToArray(resp_json_data, item);
+			result = result->next;
+		}
+	}
+	xSemaphoreGive(query_lock);
 }
 
 esp_err_t app_mdns_update_framesize(const int size) {
