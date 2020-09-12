@@ -50,18 +50,28 @@ typedef struct {
     size_t len;
 } jpg_chunking_t;
 
-esp_err_t init_server(void) {
+esp_err_t init_server(const char *base_path) {
 	rest_server_context_t *rest_context = NULL;
 	rest_context = calloc(1, sizeof(rest_server_context_t));
 	APP_ERROR_CHECK_WITH_MSG(!!rest_context, "No memory for rest context", err_init);
 
+	strlcpy(rest_context->base_path, base_path, sizeof(rest_context->base_path));
+
 	httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-	config.max_uri_handlers = 10;
+	config.max_uri_handlers = 12;
 
 	config.uri_match_fn = httpd_uri_match_wildcard;
 
 	ESP_LOGI(APP_HTTPD_TAG, "Starting HTTP Server");
 	APP_ERROR_CHECK_WITH_MSG(httpd_start(&camera_httpd, &config) == ESP_OK, "Start web server failed", err_init);
+
+	 /* URI handler for getting web server files */
+	httpd_uri_t common_uri = {
+		.uri = "/*",
+		.method = HTTP_GET,
+		.handler = common_handler,
+		.user_ctx = rest_context
+	};
 
 	/* URI handler for fetching system info */
 	httpd_uri_t system_info_uri = {
@@ -145,12 +155,14 @@ esp_err_t init_server(void) {
 	httpd_register_uri_handler(camera_httpd, &cam_win_uri);
 	httpd_register_uri_handler(camera_httpd, &mdns_uri);
 
+	httpd_register_uri_handler(camera_httpd, &common_uri);
+
 	config.server_port += 1;
 	config.ctrl_port += 1;
 	APP_ERROR_CHECK_WITH_MSG(httpd_start(&stream_httpd, &config) == ESP_OK, "Start stream server failed", err_init);
 
 	httpd_uri_t cam_stream_uri = {
-		.uri = "/api/v1/cam/stream",
+		.uri = "/cam/stream",
 		.method = HTTP_GET,
 		.handler = cam_stream_handler,
 		.user_ctx = NULL

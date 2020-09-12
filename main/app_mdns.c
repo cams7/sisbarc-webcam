@@ -17,8 +17,8 @@
 #include "app_camera.h"
 #include "app_mdns.h"
 
-static const char * service_name = "_esp-cam";
-static const char * proto = "_tcp";
+static const char * service_name = "sisbarc-webcam";
+static const char * proto = "TCP";
 
 static SemaphoreHandle_t query_lock = NULL;
 
@@ -128,11 +128,11 @@ esp_err_t app_mdns_main(void) {
 
 	xSemaphoreGive(query_lock);
 
-	sensor_t * s = esp_camera_sensor_get();
+	sensor_t * sensor = esp_camera_sensor_get();
 
-	APP_ERROR_CHECK_WITH_MSG(s != NULL, "Something wrong", err_app_mdns);
+	APP_ERROR_CHECK_WITH_MSG(sensor != NULL, "Something wrong", err_app_mdns);
 
-	switch(s->id.PID){
+	switch(sensor->id.PID){
 		case OV2640_PID:
 			model = "OV2640";
 			break;
@@ -157,8 +157,8 @@ esp_err_t app_mdns_main(void) {
 		snprintf(iname, 64, "%s-%s-%02X%02X%02X", CAM_BOARD, model, mac[3], mac[4], mac[5]);
 	}
 
-	snprintf(framesize, 4, "%d", s->status.framesize);
-	snprintf(pixformat, 4, "%d", s->pixformat);
+	snprintf(framesize, 4, "%d", sensor->status.framesize);
+	snprintf(pixformat, 4, "%d", sensor->pixformat);
 
 	char * src = iname, *dst = hname, c;
 	while (*src) {

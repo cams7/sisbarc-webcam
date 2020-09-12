@@ -15,7 +15,7 @@ extern "C" {
 
 #define APP_HTTPD_TAG "app_httpd"
 
-esp_err_t init_server(void);
+esp_err_t init_server(const char *base_path);
 
 #ifdef __cplusplus
 }

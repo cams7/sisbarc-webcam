@@ -5,4 +5,16 @@ menu "SISBARC-WEBCAM Configuration"
         default ""
         help
             Hostname that the camera will advertise over mDNS.
+            
+    config CAM_WEB_MOUNT_POINT
+        string "Website mount point in VFS"
+        default "/www"
+        help
+            Specify the mount point in VFS.
+            
+   config CAM_WEB_DEPLOY_SF
+        bool "Deploy website to SPI Nor Flash"
+        help
+            Deploy website to SPI Nor Flash.
+            Choose this production mode if the size of website is small (less than 2MB).
 endmenu
